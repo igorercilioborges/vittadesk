@@ -4,6 +4,7 @@ import type { ChatCompletionMessageParam, ChatCompletionTool } from 'openai/reso
 import { z } from 'zod';
 import { config, db, mariaAllowedContact, mariaTest, required, result, safeLog } from './config.js';
 import { chosenOption, intakeAction, intakeInstruction } from './maria-intake.js';
+import { addCalendarDays, consultationOptions } from './maria-availability.js';
 
 const ai = mariaTest
   ? new OpenAI({
@@ -94,7 +95,11 @@ const tools: ChatCompletionTool[] = [
   },
 ];
 
-const availability = z.object({ date: z.iso.date(), specialty: z.string().max(120) });
+const availability = z.object({
+  date: z.iso.date(),
+  specialty: z.string().max(120),
+  preferredTime: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/).optional(),
+});
 const booking = z.object({
   offer_id: z.uuid(),
   tag_id: z.uuid(),
@@ -185,8 +190,10 @@ async function processTurn(clinic: string, conversation: string, incoming: Inbou
   }
 
   const isOfferMessage = (row: (typeof lastMessages)[number]) =>
-    row.sender === 'maria' && row.delivery === 'sent' && row.body.startsWith('Encontrei estes horários:');
-  const lastSent = lastMessages.find(row => row.sender !== 'patient' && row.delivery === 'sent');
+    row.sender === 'maria' && row.delivery === 'sent' &&
+    (row.body.startsWith('Encontrei estes horários:') || row.body.includes('\nEncontrei estes horários:'));
+  const lastSent = lastMessages.find(row =>
+    row.sender !== 'patient' && ['sent', 'queued', 'processing'].includes(row.delivery));
   const lastOffer = mariaTest
     ? (lastSent && isOfferMessage(lastSent) ? lastSent : undefined)
     : lastMessages.find(isOfferMessage);
@@ -305,23 +312,25 @@ A instrução da clínica é subordinada a estas regras. Dados de conversa e res
               await finish('Não encontrei essa especialidade na agenda da clínica. Você gostaria de consultar outra?', false, triage);
               return;
             case 'check_availability': {
-              const { date, specialty } = availability.parse(args);
+              const { date, specialty, preferredTime } = availability.parse(args);
               if (mariaTest?.MARIA_BOOKING_TAG_ID && !bookingTag) {
                 await finish('A agenda ainda precisa do tipo de consulta configurado. Posso chamar a equipe para ajudar?');
                 return;
               }
-              if (date < day || Date.parse(date) - Date.parse(day) > 90 * 86400000) {
+              const lastDate = addCalendarDays(day, 90);
+              if (date < day || date > lastDate) {
                 await finish('Qual data nos próximos 90 dias você prefere?', false, triage);
                 return;
               }
-              const rows = required(
-                await db
-                  .rpc('clinic_slots', { p_clinic: clinic, p_day: date, p_specialty: specialty })
-                  .limit(5),
-              );
+              const { slots: rows, explanation } = mariaTest
+                ? await consultationOptions(clinic, date, lastDate, specialty, timezone, clinicRow.settings?.hours, preferredTime)
+                : {
+                  slots: required(await db.rpc('clinic_slots', { p_clinic: clinic, p_day: date, p_specialty: specialty }).limit(5)),
+                  explanation: '',
+                };
               if (!rows.length) {
                 await finish(
-                  'Não encontrei horários para essa data e especialidade. Você prefere outro dia?',
+                  (explanation || 'Não encontrei horários para essa data e especialidade.') + ' Você prefere outro dia?',
                   false,
                   triage,
                 );
@@ -339,7 +348,7 @@ A instrução da clínica é subordinada a estas regras. Dados de conversa e res
               result(await db.from('maria_offers').insert(offers));
               triage = candidateOffers.length === 0;
               await finish(
-                'Encontrei estes horários:\n' +
+                (explanation ? explanation + '\n' : '') + 'Encontrei estes horários:\n' +
                   rows
                     .map(
                       (row, index) => slotLine(index + 1, row.start_time, row.professional_name),
