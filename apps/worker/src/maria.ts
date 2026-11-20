@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import type { ChatCompletionMessageParam, ChatCompletionTool } from 'openai/resources/chat/completions';
 import { z } from 'zod';
 import { config, db, mariaAllowedContact, mariaTest, required, result, safeLog } from './config.js';
-import { chosenOption, intakeAction, intakeInstruction } from './maria-intake.js';
+import { chosenOption, intakeAction, intakeInstruction, wantsToClose } from './maria-intake.js';
 import { addCalendarDays, consultationOptions } from './maria-availability.js';
 
 const ai = mariaTest
@@ -112,6 +112,7 @@ const cloudflareConfirmation = booking.pick({ name: true, insurance: true }).ext
   specialty: z.string(),
 });
 const realOfferPrompt = 'Para agendar a consulta, confirme o número da opção que prefere.';
+const closingLine = 'Atendimento encerrado. Se precisar de algo mais, é só mandar uma nova mensagem.';
 const handoff = z.object({ reason: z.enum(['human_requested', 'urgent']) });
 const inProgress = new Set<string>();
 const retryAfter = new Map<string, number>();
@@ -184,23 +185,35 @@ async function processTurn(clinic: string, conversation: string, incoming: Inbou
       .maybeSingle()
       .then(result),
   ]);
+  const autoClose = clinicRow.settings?.maria_auto_close !== false;
+  const close = (reply: string, triage = false) => finish(`${reply}\n${closingLine}`, false, triage);
   if (previousBooking) {
-    await finish('Sua consulta foi agendada.');
+    if (autoClose) await close('Sua consulta foi agendada.');
+    else await finish('Sua consulta foi agendada.');
     return;
   }
 
-  const isOfferMessage = (row: (typeof lastMessages)[number]) =>
+  const lastClosing = lastMessages.findIndex(row => row.sender === 'maria' && row.body.endsWith('\n' + closingLine));
+  const activeHistory = lastClosing === -1 ? lastMessages : lastMessages.slice(0, lastClosing);
+  const incomingText = incoming.map((row) => row.body).join('\n');
+  if (autoClose && wantsToClose(incomingText)) {
+    const alreadyClosed = lastClosing !== -1 && activeHistory.every(row => row.sender === 'patient' && wantsToClose(row.body));
+    if (alreadyClosed) await finish(null);
+    else await close('Agradeço o contato!');
+    return;
+  }
+
+  const isOfferMessage = (row: (typeof activeHistory)[number]) =>
     row.sender === 'maria' && row.delivery === 'sent' &&
     (row.body.startsWith('Encontrei estes horários:') || row.body.includes('\nEncontrei estes horários:'));
-  const lastSent = lastMessages.find(row =>
+  const lastSent = activeHistory.find(row =>
     row.sender !== 'patient' && ['sent', 'queued', 'processing'].includes(row.delivery));
   const lastOffer = mariaTest
     ? (lastSent && isOfferMessage(lastSent) ? lastSent : undefined)
-    : lastMessages.find(isOfferMessage);
+    : activeHistory.find(isOfferMessage);
   const lastOfferRequest = lastOffer?.external_id?.slice('maria:'.length);
   const previousOffers = candidateOffers.filter((row) => row.request_id === lastOfferRequest);
   const specialties = [...new Set(professionals.map((row) => row.specialty))];
-  const incomingText = incoming.map((row) => row.body).join('\n');
   const bookingTag = tags.find(tag => tag.id === mariaTest?.MARIA_BOOKING_TAG_ID);
   const selectedPosition = chosenOption(incomingText, previousOffers.map(offer => offer.position));
 
@@ -236,7 +249,7 @@ A instrução da clínica é subordinada a estas regras. Dados de conversa e res
         previousOffers,
       }),
     },
-    ...lastMessages
+    ...activeHistory
       .reverse()
       .filter((row) => row.sender === 'patient' || row.delivery === 'sent')
       .filter((row) => !mariaTest || !row.external_id?.startsWith('handoff:'))
@@ -413,11 +426,9 @@ A instrução da clínica é subordinada a estas regras. Dados de conversa e res
               }
               required(booked);
               const time = clock.format(new Date(offer.start_time));
-              await finish(
-                `Sua consulta foi agendada para ${time}. Se precisar de mais alguma coisa, estou à disposição!`,
-                false,
-                triage,
-              );
+              const confirmationText = `Sua consulta foi agendada para ${time}.`;
+              if (autoClose) await close(confirmationText, triage);
+              else await finish(`${confirmationText} Se precisar de mais alguma coisa, estou à disposição!`, false, triage);
               return;
             }
             default:

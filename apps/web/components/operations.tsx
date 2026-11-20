@@ -39,6 +39,23 @@ export function ChatDesk({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const bottom = useRef<HTMLDivElement>(null);
+  const whatsappEnabled = data.whatsapp_sessions.some((session) => session.enabled);
+  useEffect(() => {
+    if (!supabase || !workerUrl || !whatsappEnabled) return;
+    const controller = new AbortController();
+    const wake = () => {
+      if (document.visibilityState === 'visible')
+        void wakeWhatsAppWorker(controller.signal).catch(() => {});
+    };
+    wake();
+    const timer = setInterval(wake, 5 * 60_000);
+    document.addEventListener('visibilitychange', wake);
+    return () => {
+      controller.abort();
+      clearInterval(timer);
+      document.removeEventListener('visibilitychange', wake);
+    };
+  }, [whatsappEnabled]);
   const chats = data.conversations.slice().sort((a, b) => b.updated_at.localeCompare(a.updated_at));
   const chat = chats.find((row) => row.id === selected) ?? chats[0];
   const patient = data.patients.find((row) => row.id === chat?.patient_id);
@@ -312,6 +329,7 @@ export function Agents({
                 duration: Number(field(fields, 'duration')),
                 hours,
                 rules: field(fields, 'rules'),
+                maria_auto_close: fields.has('maria_auto_close'),
               },
             });
           }}
@@ -331,6 +349,10 @@ export function Agents({
             <label className="wide">
               Instruções da clínica
               <textarea name="rules" rows={4} maxLength={4000} defaultValue={clinic.settings.rules} />
+            </label>
+            <label className="wide check">
+              <input name="maria_auto_close" type="checkbox" defaultChecked={clinic.settings.maria_auto_close !== false} />
+              Encerrar automaticamente após agendar ou quando o paciente se despedir
             </label>
             {['Segunda', 'Terça', 'Quarta', 'Quinta', 'Sexta', 'Sábado', 'Domingo'].map((day, index) => (
               <div className="wide hours" key={day}>

@@ -7,7 +7,7 @@ type Table<Row extends Record<string, unknown>> = {
 type Procedure<Args extends Record<string, unknown>, Returns> = { Args: Args; Returns: Returns };
 type Scoped = { clinic_id: string };
 type Encrypted = { iv: string; data: string; tag: string };
-type Settings = { timezone?: string; rules?: string; hours?: Record<string, [string, string]> };
+type Settings = { timezone?: string; rules?: string; hours?: Record<string, [string, string]>; maria_auto_close?: boolean };
 export type Slot = {
   professional_id: string;
   professional_name: string;

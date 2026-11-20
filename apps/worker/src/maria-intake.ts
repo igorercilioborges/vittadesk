@@ -20,6 +20,11 @@ A aplicação só oferece horários retornados pela agenda e só confirma a rese
 const normalize = (text: string) => text.toLocaleLowerCase('pt-BR')
   .normalize('NFD').replace(/\p{M}/gu, '').trim();
 
+export function wantsToClose(incoming: string) {
+  const reply = normalize(incoming).replace(/[.!?,\s]+$/u, '');
+  return /^(?:(?:muit[oa] )?obrigad[oa]|agradeco|era so isso|por enquanto e so|tchau|ate logo|pode (?:encerrar|finalizar)(?: o atendimento)?)(?:[,! ]+(?:obrigad[oa]|tchau|ate logo))?$/.test(reply);
+}
+
 const ask = (field: string) => ({ name: 'request_details', args: { field } });
 
 export function chosenOption(incoming: string, positions: number[]) {

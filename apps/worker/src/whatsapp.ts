@@ -14,6 +14,7 @@ import { db, decrypt, encrypt, mariaEnabledFor, required, result, safeLog } from
 
 const instances = new Map<string, { socket: WASocket; ready: boolean }>();
 const retries = new Map<string, number>();
+const offlineMessageWindowSeconds = 24 * 60 * 60;
 const quiet = () => {};
 const socketLogger: NonNullable<Parameters<typeof makeWASocket>[0]['logger']> = {
   level: 'silent',
@@ -164,10 +165,14 @@ async function connect(clinic: string) {
       void persist().catch((issue) => safeLog('Credenciais WhatsApp', issue));
   });
   socket.ev.on('messages.upsert', ({ type, messages }) => {
-    if (type !== 'notify' || instances.get(clinic) !== instance) return;
+    if (instances.get(clinic) !== instance) return;
     void (async () => {
-      for (const message of messages)
+      const oldestOfflineMessage = Date.now() / 1000 - offlineMessageWindowSeconds;
+      for (const message of messages) {
+        // Baileys reports messages queued while the device was offline as append.
+        if (type === 'append' && !(Number(message.messageTimestamp) >= oldestOfflineMessage)) continue;
         await receive(clinic, socket, message).catch((issue) => safeLog('Receber WhatsApp', issue));
+      }
     })();
   });
   socket.ev.on('connection.update', (update) => {

@@ -4,6 +4,7 @@ export type Settings = {
   timezone?: string;
   duration?: number;
   rules?: string;
+  maria_auto_close?: boolean;
   hours?: Record<string, [string, string]>;
 };
 export type Clinic = { id: string; name: string; settings: Settings };
