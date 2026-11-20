@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
 import {
   ArrowLeftToLine,
   ArrowRightToLine,
@@ -23,6 +23,7 @@ import { Button } from '@/components/ui/button';
 import { Dashboard } from './dashboard';
 import { Brand } from './brand';
 import { Licenses } from './licenses';
+import { PasswordRecovery } from './password-recovery';
 import { Agenda, AppointmentForm } from './agenda';
 import { Finance, Patients } from './records';
 import { Agents, ChatDesk, Connections } from './operations';
@@ -47,6 +48,7 @@ const navigation = [
   { id: 'connections', label: 'Ferramentas & Conexões', icon: Plug },
 ] as const;
 type Screen = (typeof navigation)[number]['id'];
+const recoverySessionKey = 'vittadesk-password-recovery';
 const tables = Object.keys(emptyData) as (keyof Data)[];
 const live = [
   'appointments',
@@ -93,6 +95,7 @@ export function Workspace() {
   const [loadedClinicId, setLoadedClinicId] = useState('');
   const [user, setUser] = useState<string | null>(null);
   const [loading, setLoading] = useState(!demo);
+  const [recovering, setRecovering] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
   const [mobileMenu, setMobileMenu] = useState(false);
   const [popover, setPopover] = useState<'profile' | 'notifications' | null>(null);
@@ -100,6 +103,7 @@ export function Workspace() {
   const [appointmentDate, setAppointmentDate] = useState<string>();
   const [notice, setNotice] = useState('');
   const authenticatedUser = useRef<string | null>(null);
+  const recoveryUser = useRef<string | null>(null);
   const activeClinic = useRef(clinicId);
   activeClinic.current = clinicId;
 
@@ -121,11 +125,21 @@ export function Workspace() {
       return;
     }
     const client = supabase;
+    if (new URLSearchParams(window.location.hash.slice(1)).get('error_code') === 'otp_expired') {
+      setNotice('O link expirou. Use Esqueci minha senha para pedir outro.');
+    }
+    try {
+      recoveryUser.current = window.sessionStorage.getItem(recoverySessionKey) ?? recoveryUser.current;
+    } catch {
+      // Recovery still works for the current tab while storage is unavailable.
+    }
     let generation = 0;
-    const { data: auth } = client.auth.onAuthStateChange((_event, session) => {
+    const { data: auth } = client.auth.onAuthStateChange((event, session) => {
       const request = ++generation;
       if (!session) {
         authenticatedUser.current = null;
+        rememberRecovery(null);
+        setRecovering(false);
         setUser(null);
         setIsLicenseOwner(false);
         setClinics([]);
@@ -134,6 +148,12 @@ export function Workspace() {
         setLoadedClinicId('');
         setLoading(false);
         return;
+      }
+      if (event === 'PASSWORD_RECOVERY') rememberRecovery(session.user.id);
+      if (recoveryUser.current === session.user.id) {
+        setRecovering(true);
+      } else if (authenticatedUser.current !== session.user.id) {
+        setRecovering(false);
       }
       if (authenticatedUser.current !== session.user.id) {
         authenticatedUser.current = session.user.id;
@@ -287,7 +307,28 @@ export function Workspace() {
     }));
   };
 
+  function rememberRecovery(id: string | null) {
+    recoveryUser.current = id;
+    try {
+      if (id) window.sessionStorage.setItem(recoverySessionKey, id);
+      else window.sessionStorage.removeItem(recoverySessionKey);
+    } catch {
+      // The in-memory marker is enough until the user leaves this page.
+    }
+  }
+
   const clinic = clinics.find((row) => row.id === clinicId);
+  if (supabase && recovering) {
+    return (
+      <PasswordRecovery
+        client={supabase}
+        finish={() => {
+          rememberRecovery(null);
+          setRecovering(false);
+        }}
+      />
+    );
+  }
   if (supabase && !loading && user && isLicenseOwner && (showLicenses || !clinic)) {
     return (
       <Licenses
@@ -564,8 +605,52 @@ export function Workspace() {
 }
 
 function Login({ loading, user, notice }: { loading: boolean; user: string | null; notice: string }) {
+  const [mode, setMode] = useState<'login' | 'recovery'>('login');
+  const [email, setEmail] = useState('');
   const [message, setMessage] = useState('');
+  const [requested, setRequested] = useState(false);
   const [busy, setBusy] = useState(false);
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!supabase || busy) return;
+    setBusy(true);
+    setMessage('');
+    const fields = new FormData(event.currentTarget);
+    try {
+      if (mode === 'recovery') {
+        const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), {
+          redirectTo: new URL('/', window.location.origin).href,
+        });
+        if (error) {
+          setMessage(
+            error.status === 429
+              ? 'Aguarde alguns minutos antes de solicitar outro link.'
+              : 'O envio está indisponível. Tente novamente ou procure a administração da clínica.',
+          );
+        } else {
+          setRequested(true);
+        }
+      } else {
+        const { error } = await supabase.auth.signInWithPassword({
+          email: email.trim(),
+          password: String(fields.get('password') ?? ''),
+        });
+        if (error) setMessage('Confira seu e-mail e senha.');
+      }
+    } catch {
+      setMessage('Não foi possível conectar. Tente novamente.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function changeMode(next: 'login' | 'recovery') {
+    setMode(next);
+    setMessage('');
+    setRequested(false);
+  }
+
   return (
     <main className="login">
       <section className="card">
@@ -579,31 +664,45 @@ function Login({ loading, user, notice }: { loading: boolean; user: string | nul
             <Button onClick={() => void supabase?.auth.signOut()}>Sair</Button>
           </>
         ) : (
-          <form
-            onSubmit={async (event) => {
-              event.preventDefault();
-              const fields = new FormData(event.currentTarget);
-              setBusy(true);
-              const result = await supabase?.auth.signInWithPassword({
-                email: String(fields.get('email')),
-                password: String(fields.get('password')),
-              });
-              setBusy(false);
-              setMessage(result?.error ? 'Confira seu e-mail e senha.' : '');
-            }}
-          >
-            <h1>Acesse sua conta</h1>
-            <label>
-              E-mail
-              <input type="email" name="email" required autoComplete="username" />
-            </label>
-            <label>
-              Senha
-              <input name="password" type="password" required autoComplete="current-password" />
-            </label>
-            <Button variant="default" type="submit" disabled={busy}>
-              Entrar
-            </Button>
+          <form onSubmit={submit}>
+            <h1>{mode === 'recovery' ? 'Recuperar senha' : 'Acesse sua conta'}</h1>
+            {requested ? (
+              <p role="status">
+                Se houver uma conta para esse e-mail, você receberá instruções para redefinir a senha. Confira
+                também a pasta de spam.
+              </p>
+            ) : (
+              <>
+                <label>
+                  E-mail
+                  <input
+                    type="email"
+                    name="email"
+                    value={email}
+                    onChange={(event) => setEmail(event.target.value)}
+                    required
+                    autoComplete="username"
+                  />
+                </label>
+                {mode === 'login' && (
+                  <label>
+                    Senha
+                    <input name="password" type="password" required autoComplete="current-password" />
+                  </label>
+                )}
+                <Button variant="default" type="submit" disabled={busy}>
+                  {mode === 'recovery' ? 'Enviar link de recuperação' : 'Entrar'}
+                </Button>
+              </>
+            )}
+            <button
+              disabled={busy}
+              type="button"
+              className="text-button"
+              onClick={() => changeMode(mode === 'login' ? 'recovery' : 'login')}
+            >
+              {mode === 'login' ? 'Esqueci minha senha' : 'Voltar ao login'}
+            </button>
           </form>
         )}
         {(message || notice) && <p role="alert">{message || notice}</p>}

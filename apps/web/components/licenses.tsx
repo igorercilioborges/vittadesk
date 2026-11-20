@@ -1,27 +1,22 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { FunctionsHttpError, type SupabaseClient } from '@supabase/supabase-js';
+import type { SupabaseClient } from '@supabase/supabase-js';
 import { Button } from '@/components/ui/button';
 import { Brand } from './brand';
 import { field, Heading, Modal } from './forms';
+import { LicenseAccountForm, licenseRoles } from './license-account-form';
 
-const roles = {
-  admin: 'Administração',
-  manager: 'Gerência',
-  receptionist: 'Recepção',
-  doctor: 'Profissional',
-};
 type Clinic = { id: string; name: string };
 type License = {
   id: string;
   clinic_name: string;
   email: string;
   name: string;
-  role: keyof typeof roles;
+  role: keyof typeof licenseRoles;
 };
 type Snapshot = { clinics: Clinic[]; licenses: License[] };
-type Action = 'clinic' | 'register' | 'grant' | 'password' | License;
+type Action = 'clinic' | 'account' | 'password' | License;
 
 export function Licenses({
   client,
@@ -39,6 +34,7 @@ export function Licenses({
   const [refresh, setRefresh] = useState(0);
   const [loading, setLoading] = useState(true);
   const [notice, setNotice] = useState('');
+  const [feedback, setFeedback] = useState('');
 
   useEffect(() => {
     let active = true;
@@ -67,59 +63,27 @@ export function Licenses({
       return;
     }
 
-    if (action === 'register') {
-      const password = String(values.get('password') ?? '');
-      if (password !== values.get('confirmation')) throw new Error('As senhas não coincidem.');
-      const { error } = await client.functions.invoke('license-users', {
-        body: {
-          clinicId: field(values, 'clinic'),
-          email: field(values, 'email'),
-          name: field(values, 'name'),
-          role: field(values, 'role'),
-          password,
-        },
-      });
-      if (error) {
-        if (error instanceof FunctionsHttpError) {
-          const response = await error.context.json().catch(() => null);
-          if (typeof response?.message === 'string') throw new Error(response.message);
-        }
-        throw new Error('Não foi possível comunicar com o serviço de cadastro.');
-      }
-      setRefresh((current) => current + 1);
-      refreshAccount();
-      return;
-    }
-
     const response =
       action === 'clinic'
         ? await client.rpc('license_admin_create_clinic', {
             p_name: field(values, 'name'),
             p_slug: field(values, 'slug'),
           })
-        : action === 'grant'
-          ? await client.rpc('license_admin_grant', {
-              p_clinic_id: field(values, 'clinic'),
-              p_email: field(values, 'email'),
-              p_name: field(values, 'name'),
-              p_role: field(values, 'role'),
-            })
-          : await client.rpc('license_admin_revoke', { p_license_id: action?.id });
+        : await client.rpc('license_admin_revoke', {
+            p_license_id: typeof action === 'object' ? action?.id : undefined,
+          });
     if (response.error) throw response.error;
+    updateLicenses(action === 'clinic' ? 'Clínica cadastrada.' : 'Licença revogada.');
+  }
+
+  function updateLicenses(message: string) {
+    setFeedback(message);
     setRefresh((current) => current + 1);
     refreshAccount();
   }
 
   const title =
-    action === 'clinic'
-      ? 'Nova clínica'
-      : action === 'register'
-        ? 'Cadastrar usuário'
-        : action === 'grant'
-          ? 'Liberar licença'
-          : action === 'password'
-            ? 'Alterar minha senha'
-            : 'Revogar licença';
+    action === 'clinic' ? 'Nova clínica' : action === 'password' ? 'Alterar minha senha' : 'Revogar licença';
 
   return (
     <main className="main license-workspace">
@@ -136,21 +100,26 @@ export function Licenses({
           <h2>Acessos por clínica</h2>
           <div className="toolbar-group">
             <Button onClick={() => setAction('clinic')}>Nova clínica</Button>
-            <Button disabled={!snapshot.clinics.length} onClick={() => setAction('grant')}>
-              Liberar licença
-            </Button>
             <Button
               variant="default"
               disabled={!snapshot.clinics.length}
-              onClick={() => setAction('register')}
+              onClick={() => setAction('account')}
             >
-              Cadastrar usuário
+              Novo usuário ou licença
             </Button>
           </div>
         </div>
         {notice && (
           <p className="notice" role="alert">
             {notice}
+          </p>
+        )}
+        {!loading && !snapshot.clinics.length && (
+          <p className="account-match">Cadastre uma clínica para liberar o primeiro acesso.</p>
+        )}
+        {feedback && (
+          <p className="account-feedback" role="status">
+            {feedback}
           </p>
         )}
         <div className="table-scroll">
@@ -172,7 +141,7 @@ export function Licenses({
                     <br />
                     <small>{row.email}</small>
                   </td>
-                  <td>{roles[row.role]}</td>
+                  <td>{licenseRoles[row.role]}</td>
                   <td>
                     <Button onClick={() => setAction(row)}>Revogar</Button>
                   </td>
@@ -187,7 +156,15 @@ export function Licenses({
           </table>
         </div>
       </section>
-      {action && (
+      {action === 'account' && (
+        <LicenseAccountForm
+          client={client}
+          clinics={snapshot.clinics}
+          close={() => setAction(null)}
+          onSaved={updateLicenses}
+        />
+      )}
+      {action && action !== 'account' && (
         <Modal title={title} close={() => setAction(null)} onSave={save}>
           <div className="form-grid">
             {action === 'clinic' && (
@@ -208,47 +185,15 @@ export function Licenses({
                 </label>
               </>
             )}
-            {(action === 'grant' || action === 'register') && (
+            {action === 'password' && (
               <>
                 <label>
-                  Clínica
-                  <select name="clinic" aria-label="Clínica" required>
-                    {snapshot.clinics.map((clinic) => (
-                      <option key={clinic.id} value={clinic.id}>
-                        {clinic.name}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label>
-                  E-mail
-                  <input type="email" name="email" required />
-                </label>
-                <label>
-                  Nome do usuário
-                  <input name="name" maxLength={120} required />
-                </label>
-                <label>
-                  Perfil
-                  <select name="role" aria-label="Perfil" defaultValue="receptionist" required>
-                    {Object.entries(roles).map(([role, name]) => (
-                      <option key={role} value={role}>
-                        {name}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              </>
-            )}
-            {(action === 'password' || action === 'register') && (
-              <>
-                <label>
-                  {action === 'register' ? 'Senha inicial' : 'Nova senha'}
+                  Nova senha
                   <input
                     name="password"
                     type="password"
                     autoComplete="new-password"
-                    minLength={action === 'register' ? 6 : 12}
+                    minLength={12}
                     maxLength={72}
                     required
                   />
@@ -259,7 +204,7 @@ export function Licenses({
                     name="confirmation"
                     type="password"
                     autoComplete="new-password"
-                    minLength={action === 'register' ? 6 : 12}
+                    minLength={12}
                     maxLength={72}
                     required
                   />

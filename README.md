@@ -46,9 +46,13 @@ values ('00000000-0000-0000-0000-000000000000');
 
 Entre no VittaDesk com essa conta e abra **Licenças**. A área aparece automaticamente se a conta ainda não está vinculada a uma clínica. Se já estiver, abra **Gerenciar licenças** no menu de perfil. Use **Alterar senha** para trocar a senha temporária.
 
-Cadastre as clínicas em **Nova clínica**. Em **Cadastrar usuário**, informe o nome, e-mail, senha inicial, clínica e perfil. O VittaDesk cria a conta e o acesso à clínica em uma única transação. Para uma conta existente, use **Liberar licença** para adicionar uma clínica ou atualizar o perfil. Revogar uma licença encerra o acesso à clínica daquele vínculo e preserva os registros. Uma conta pode ter licenças para clínicas diferentes.
+Cadastre as clínicas em **Nova clínica**. Abra **Novo usuário ou licença**, escolha a clínica e consulte o e-mail. Para um e-mail novo, informe nome, senha inicial e perfil. Para uma conta existente, o painel libera ou atualiza a licença da clínica selecionada. A criação de uma nova conta e da sua primeira licença ocorre em uma única transação. Revogar uma licença encerra o acesso à clínica daquele vínculo e preserva os registros. Uma conta pode ter licenças para clínicas diferentes.
 
 Publique a Edge Function com `supabase functions deploy license-users` após aplicar as migrations. A função valida a sessão e a permissão da conta proprietária antes de acessar a API administrativa de autenticação.
+
+### Recuperação de senha
+
+Na tela de login, **Esqueci minha senha** pede ao Supabase um link que retorna à mesma origem do painel. No Supabase, configure **Authentication → URL Configuration → Site URL** para a URL de produção e inclua a origem com a barra final em **Redirect URLs**. Use SMTP próprio para que o Supabase envie recuperação aos usuários do sistema. O SMTP padrão do Supabase atende apenas endereços da equipe do projeto.
 
 Cada clínica configura profissionais e etiquetas em **CRM & Financeiro**, além de horário de funcionamento, duração e regras em **Agentes**. O fuso inicial é `America/Sao_Paulo` e pode ser ajustado em `clinics.settings.timezone`. Use números de telefone em formato internacional, apenas dígitos no banco.
 

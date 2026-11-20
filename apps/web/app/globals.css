@@ -1191,3 +1191,17 @@ input[type='checkbox'] {
   border-color: #e2e8f0;
   color: #52647e;
 }
+
+.account-match {
+  margin: 10px 0;
+  overflow-wrap: anywhere;
+}
+.record-panel > .account-match,
+.account-feedback {
+  padding-inline: 16px;
+}
+.account-feedback {
+  padding-block: 10px;
+  color: #065f46;
+  background: #ecfdf5;
+}

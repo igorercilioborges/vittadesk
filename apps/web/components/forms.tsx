@@ -28,11 +28,13 @@ export function Modal({
   title,
   close,
   onSave,
+  submitLabel = 'Salvar',
   children,
 }: {
   title: string;
   close: () => void;
-  onSave?: (fields: FormData) => Promise<void>;
+  onSave?: (fields: FormData) => Promise<void | boolean>;
+  submitLabel?: string;
   children: ReactNode;
 }) {
   const titleId = useId();
@@ -48,8 +50,8 @@ export function Modal({
     setBusy(true);
     setError('');
     try {
-      await onSave(new FormData(event.currentTarget));
-      close();
+      const result = await onSave(new FormData(event.currentTarget));
+      if (result !== false) close();
     } catch (issue) {
       setError((issue as Error).message);
     } finally {
@@ -83,7 +85,7 @@ export function Modal({
           <div className="modal-actions">
             <Button onClick={close}>Cancelar</Button>
             <Button variant="default" type="submit" disabled={busy}>
-              {busy ? 'Salvando…' : 'Salvar'}
+              {busy ? 'Aguarde…' : submitLabel}
             </Button>
           </div>
         )}
