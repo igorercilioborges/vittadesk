@@ -1,0 +1,17 @@
+{
+  "name": "vittadesk",
+  "private": true,
+  "workspaces": [
+    "apps/web",
+    "apps/worker"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "npm run dev -w @vittadesk/web",
+    "dev:worker": "npm run dev -w @vittadesk/worker",
+    "build": "npm run build --workspaces",
+    "typecheck": "npm run typecheck --workspaces"
+  }
+}

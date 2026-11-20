@@ -1,0 +1,59 @@
+import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
+import { createClient } from '@supabase/supabase-js';
+import { z } from 'zod';
+import type { Database } from './database.js';
+
+export const config = z
+  .object({
+    SUPABASE_URL: z.url(),
+    SUPABASE_SERVICE_ROLE_KEY: z.string().min(1),
+    SESSION_ENCRYPTION_KEY: z.string().regex(/^[0-9a-f]{64}$/i),
+    OPENAI_API_KEY: z.string().min(1).optional(),
+    OPENAI_MODEL: z.string().default('gpt-4.1-mini'),
+    WEB_ORIGIN: z.url(),
+    PORT: z.coerce.number().int().min(1).default(3001),
+  })
+  .parse({ ...process.env, OPENAI_API_KEY: process.env.OPENAI_API_KEY || undefined });
+
+export const db = createClient<Database>(config.SUPABASE_URL, config.SUPABASE_SERVICE_ROLE_KEY, {
+  auth: { persistSession: false, autoRefreshToken: false },
+});
+
+type QueryResult = { data: unknown; error: { message: string; code?: string } | null };
+
+export function result<R extends QueryResult>(response: R): R['data'] {
+  if (response.error) throw Object.assign(new Error(response.error.message), { code: response.error.code });
+  return response.data;
+}
+export function required<R extends QueryResult>(response: R): NonNullable<R['data']> {
+  const data = result(response);
+  if (data == null) throw new Error('Resposta inesperada do banco.');
+  return data;
+}
+
+export function encrypt(value: string) {
+  const iv = randomBytes(12);
+  const cipher = createCipheriv('aes-256-gcm', Buffer.from(config.SESSION_ENCRYPTION_KEY, 'hex'), iv);
+  return {
+    iv: iv.toString('base64'),
+    data: Buffer.concat([cipher.update(value, 'utf8'), cipher.final()]).toString('base64'),
+    tag: cipher.getAuthTag().toString('base64'),
+  };
+}
+export function decrypt(value: ReturnType<typeof encrypt>) {
+  const cipher = createDecipheriv(
+    'aes-256-gcm',
+    Buffer.from(config.SESSION_ENCRYPTION_KEY, 'hex'),
+    Buffer.from(value.iv, 'base64'),
+  );
+  cipher.setAuthTag(Buffer.from(value.tag, 'base64'));
+  return Buffer.concat([cipher.update(Buffer.from(value.data, 'base64')), cipher.final()]).toString('utf8');
+}
+
+export function safeLog(operation: string, issue: unknown) {
+  const code = issue && typeof issue === 'object' && 'code' in issue ? issue.code : undefined;
+  console.error(
+    operation,
+    typeof code === 'number' || (typeof code === 'string' && /^[\w-]{1,24}$/.test(code)) ? code : '',
+  );
+}
