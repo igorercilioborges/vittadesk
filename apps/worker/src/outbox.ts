@@ -1,4 +1,4 @@
-import { db, mariaAllowedContact, mariaTest, required, result, safeLog } from './config.js';
+import { db, mariaAllowedContact, mariaScopeForClinic, required, result, safeLog } from './config.js';
 import { connectedSocket } from './whatsapp.js';
 
 export async function recoverOutbox() {
@@ -55,16 +55,26 @@ export async function sendOutbox() {
               .eq('id', row.conversation_id)
               .single(),
           );
-          if (row.sender === 'maria' && (
-            !mariaAllowedContact(clinic, chat.phone, chat.remote_jid) ||
-            (mariaTest && Date.parse(row.created_at) < Date.parse(mariaTest.MARIA_TEST_AFTER)) ||
-            (chat.is_bot_paused && !row.external_id?.startsWith('handoff:'))
-          )) {
+          let destination = chat.remote_jid;
+          if (row.sender === 'maria') {
+            const scope = await mariaScopeForClinic(clinic);
+            if (!scope || !mariaAllowedContact(scope, chat.phone, chat.remote_jid) ||
+                Date.parse(row.created_at) < Date.parse(scope.since) ||
+                (chat.is_bot_paused && !row.external_id?.startsWith('handoff:'))) {
+              result(await mark('failed'));
+              continue;
+            }
+            if (scope.pilot) destination = `${chat.phone}@s.whatsapp.net`;
+          }
+          if (row.external_id?.startsWith('reminder:') && !result(await db.rpc('appointment_reminder_current', {
+            p_clinic: clinic,
+            p_message: row.id,
+          }))) {
             result(await mark('failed'));
             continue;
           }
           const sent = await socket.sendMessage(
-            row.sender === 'maria' && mariaTest ? `${mariaTest.MARIA_TEST_PHONE}@s.whatsapp.net` : chat.remote_jid,
+            destination,
             { text: row.body },
             { messageId: row.id.replaceAll('-', '').toUpperCase() },
           );

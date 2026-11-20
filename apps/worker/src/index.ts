@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import express from 'express';
 import { z } from 'zod';
-import { config, db, mariaTest, result, safeLog } from './config.js';
+import { cloudflare, config, db, result, safeLog } from './config.js';
 import { configureMail, pollConfirmations, pollSummaries } from './mail.js';
 import { pollMaria } from './maria.js';
 import { recoverOutbox, sendOutbox } from './outbox.js';
@@ -65,10 +65,9 @@ app.get('/health', (_req, res) => {
   res.json({
     status: 'ok',
     active: leader,
-    mariaConfigured: Boolean(mariaTest || config.OPENAI_API_KEY),
+    mariaConfigured: Boolean(cloudflare || config.OPENAI_API_KEY),
     mariaProvider: config.MARIA_PROVIDER,
-    mariaTestOnly: Boolean(mariaTest),
-    mariaRealBooking: Boolean(mariaTest?.MARIA_BOOKING_TAG_ID),
+    mariaClinicActivation: true,
   });
 });
 app.use('/gmail', (req, res, next) => {

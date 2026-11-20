@@ -989,6 +989,14 @@ input[type='checkbox'] {
   color: var(--muted);
   margin: 4px 0;
 }
+.station-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 8px;
+}
 .future-station {
   border-bottom-color: #cbd5e1;
 }

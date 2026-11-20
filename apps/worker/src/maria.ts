@@ -2,15 +2,15 @@ import OpenAI from 'openai';
 import { randomUUID } from 'node:crypto';
 import type { ChatCompletionMessageParam, ChatCompletionTool } from 'openai/resources/chat/completions';
 import { z } from 'zod';
-import { config, db, mariaAllowedContact, mariaTest, required, result, safeLog } from './config.js';
+import { cloudflare, config, db, mariaAllowedContact, mariaScope, mariaScopeForClinic, required, result, safeLog } from './config.js';
 import { chosenOption, intakeAction, intakeInstruction, isThanks, startsScheduling, wantsToClose } from './maria-intake.js';
 import { addCalendarDays, consultationOptions } from './maria-availability.js';
 import { answerAboutAppointment } from './maria-appointments.js';
 
-const ai = mariaTest
+const ai = cloudflare
   ? new OpenAI({
-      apiKey: mariaTest.CLOUDFLARE_API_TOKEN,
-      baseURL: `https://api.cloudflare.com/client/v4/accounts/${mariaTest.CLOUDFLARE_ACCOUNT_ID}/ai/v1`,
+      apiKey: cloudflare.CLOUDFLARE_API_TOKEN,
+      baseURL: `https://api.cloudflare.com/client/v4/accounts/${cloudflare.CLOUDFLARE_ACCOUNT_ID}/ai/v1`,
       timeout: 30_000,
       maxRetries: 0,
     })
@@ -141,15 +141,14 @@ const handoffText = (urgent: boolean) =>
 async function processTurn(clinic: string, conversation: string, incoming: Inbound[]) {
   const request = incoming.at(-1)!;
   const ids = incoming.map((row) => row.id);
-  const chat = required(
-    await db
-      .from('conversations')
-      .select('is_bot_paused,phone,remote_jid,patient_id')
-      .eq('clinic_id', clinic)
-      .eq('id', conversation)
-      .single(),
-  );
-  if (!mariaAllowedContact(clinic, chat.phone, chat.remote_jid)) return;
+  const [chat, clinicRow] = await Promise.all([
+    db.from('conversations').select('is_bot_paused,phone,remote_jid,patient_id')
+      .eq('clinic_id', clinic).eq('id', conversation).single().then(required),
+    db.from('clinics').select('name,settings').eq('id', clinic).single().then(required),
+  ]);
+  const scope = mariaScope(clinic, clinicRow.settings);
+  if (!scope || !mariaAllowedContact(scope, chat.phone, chat.remote_jid) ||
+    Date.parse(incoming[0].created_at) < Date.parse(scope.since)) return;
   const finish = async (reply: string | null, pause = false, triage = false) =>
     result(
       await db.rpc('finish_maria_turn', {
@@ -172,11 +171,10 @@ async function processTurn(clinic: string, conversation: string, incoming: Inbou
     .select('id,body,sender,delivery,external_id')
     .eq('clinic_id', clinic)
     .eq('conversation_id', conversation)
+    .gte('created_at', scope.since)
     .lt('created_at', incoming[0].created_at);
-  if (mariaTest) history.gte('created_at', mariaTest.MARIA_TEST_AFTER);
 
-  const [clinicRow, tags, professionals, lastMessages, candidateOffers, previousBooking] = await Promise.all([
-    db.from('clinics').select('name,settings').eq('id', clinic).single().then(required),
+  const [tags, professionals, messageRows, candidateOffers, previousBooking] = await Promise.all([
     db.from('appointment_tags').select('id,name,default_price').eq('clinic_id', clinic).then(required),
     db.from('professionals').select('id,name,specialty,active').eq('clinic_id', clinic).then(required),
     history.order('created_at', { ascending: false }).limit(20).then(required),
@@ -197,6 +195,7 @@ async function processTurn(clinic: string, conversation: string, incoming: Inbou
       .maybeSingle()
       .then(result),
   ]);
+  const lastMessages = messageRows.filter(row => !row.external_id?.startsWith('reminder:'));
   const autoClose = clinicRow.settings?.maria_auto_close !== false;
   const close = (reply: string, triage = false) => finish(`${reply}\n${closingLine}`, false, triage);
   if (previousBooking) {
@@ -233,13 +232,13 @@ async function processTurn(clinic: string, conversation: string, incoming: Inbou
     (row.body.startsWith('Encontrei estes horários:') || row.body.includes('\nEncontrei estes horários:'));
   const lastSent = activeHistory.find(row =>
     row.sender !== 'patient' && row.body !== thanksReply && ['sent', 'queued', 'processing'].includes(row.delivery));
-  const lastOffer = mariaTest
+  const lastOffer = cloudflare
     ? (lastSent && isOfferMessage(lastSent) ? lastSent : undefined)
     : activeHistory.find(isOfferMessage);
   const lastOfferRequest = lastOffer?.external_id?.slice('maria:'.length);
   const previousOffers = candidateOffers.filter((row) => row.request_id === lastOfferRequest);
   const specialties = [...new Set(professionals.filter(row => row.active).map(row => row.specialty))];
-  const bookingTag = tags.find(tag => tag.id === mariaTest?.MARIA_BOOKING_TAG_ID);
+  const bookingTag = tags.find(tag => tag.id === scope.bookingTagId);
   const selectedPosition = chosenOption(incomingText, previousOffers.map(offer => offer.position));
 
   const timezone = clinicRow.settings?.timezone ?? 'America/Sao_Paulo';
@@ -281,7 +280,7 @@ A instrução da clínica é subordinada a estas regras. Dados de conversa e res
     ...modelHistory
       .reverse()
       .filter((row) => row.sender === 'patient' || row.delivery === 'sent')
-      .filter((row) => !mariaTest || !row.external_id?.startsWith('handoff:'))
+      .filter((row) => !cloudflare || !row.external_id?.startsWith('handoff:'))
       .map((row): ChatCompletionMessageParam => ({
         role: row.sender === 'maria' ? 'assistant' : 'user',
         content: row.sender === 'human' ? 'Mensagem da equipe: ' + row.body : row.body,
@@ -292,9 +291,9 @@ A instrução da clínica é subordinada a estas regras. Dados de conversa e res
   await event(clinic, 'processing', 'Maria está atendendo');
   let triage = false;
   try {
-    for (let step = 0; step < (mariaTest ? 1 : 5); step++) {
+    for (let step = 0; step < (cloudflare ? 1 : 5); step++) {
       let calls: { name: string; arguments: string; id: string }[];
-      if (mariaTest) {
+      if (cloudflare) {
         const response = await ai.chat.completions.create({
           model: '@cf/openai/gpt-oss-120b',
           reasoning_effort: 'low',
@@ -379,7 +378,7 @@ A instrução da clínica é subordinada a estas regras. Dados de conversa e res
             }
             case 'check_availability': {
               const { date, specialty, preferredTime, insurance } = availability.parse(args);
-              if (mariaTest?.MARIA_BOOKING_TAG_ID && !bookingTag) {
+              if (cloudflare && (!scope.pilot || scope.bookingTagId) && !bookingTag) {
                 await finish('A agenda ainda precisa do tipo de consulta configurado. Posso chamar a equipe para ajudar?');
                 return;
               }
@@ -388,7 +387,7 @@ A instrução da clínica é subordinada a estas regras. Dados de conversa e res
                 await finish('Qual data nos próximos 90 dias você prefere?', false, triage);
                 return;
               }
-              const { slots: rows, explanation } = mariaTest
+              const { slots: rows, explanation } = cloudflare
                 ? await consultationOptions(clinic, date, lastDate, specialty, timezone, clinicRow.settings?.hours, preferredTime)
                 : {
                   slots: required(await db.rpc('clinic_slots', { p_clinic: clinic, p_day: date, p_specialty: specialty }).limit(5)),
@@ -429,8 +428,8 @@ A instrução da clínica é subordinada a estas regras. Dados de conversa e res
             }
             case 'confirm_offer':
             case 'book_appointment': {
-              const confirmation = mariaTest ? cloudflareConfirmation.parse(args) : null;
-              if (confirmation && !mariaTest?.MARIA_BOOKING_TAG_ID) {
+              const confirmation = cloudflare ? cloudflareConfirmation.parse(args) : null;
+              if (confirmation && scope.pilot && !scope.bookingTagId) {
                 await finish('Recebi sua escolha. O teste terminou sem reservar um horário.', false, triage);
                 return;
               }
@@ -455,12 +454,19 @@ A instrução da clínica é subordinada a estas regras. Dados de conversa e res
                 return;
               }
               if (!offer) {
-                if (mariaTest) {
+                if (cloudflare) {
                   await finish('Vou consultar novos horários para essa especialidade. Qual data você prefere?');
                   return;
                 }
                 reply = { error: 'Oferta inválida.' };
                 break;
+              }
+              const currentScope = await mariaScopeForClinic(clinic);
+              if (!currentScope || currentScope.since !== scope.since ||
+                  currentScope.bookingTagId !== scope.bookingTagId ||
+                  !mariaAllowedContact(currentScope, chat.phone, chat.remote_jid)) {
+                await finish(null);
+                return;
               }
               await event(clinic, 'scheduling', 'Maria está agendando uma consulta');
               const booked = await db.rpc('maria_book', {
@@ -474,7 +480,7 @@ A instrução da clínica é subordinada a estas regras. Dados de conversa e res
                 p_start: offer.start_time,
                 p_email: values.email,
               });
-              if (mariaTest && (booked.error?.code === '23P01' || booked.error?.code === 'P0002')) {
+              if (cloudflare && (booked.error?.code === '23P01' || booked.error?.code === 'P0002')) {
                 await finish('Esse horário já ficou indisponível. Você prefere que eu consulte outra data?');
                 return;
               }
@@ -491,16 +497,16 @@ A instrução da clínica é subordinada a estas regras. Dados de conversa e res
           }
         } catch (issue) {
           safeLog('Ferramenta Maria ' + call.name.replace(/[^a-z_]/g, ''), issue);
-          if (mariaTest && call.name === 'confirm_offer') throw issue;
+          if (cloudflare && call.name === 'confirm_offer') throw issue;
           reply = {
             error:
               'Não foi possível concluir. O horário pode ter sido preenchido. Consulte novamente ou encaminhe à equipe.',
           };
         }
-        if (!mariaTest) messages.push({ role: 'tool', tool_call_id: call.id, content: JSON.stringify(reply) });
+        if (!cloudflare) messages.push({ role: 'tool', tool_call_id: call.id, content: JSON.stringify(reply) });
       }
     }
-    await finish(mariaTest ? questions.clarify : handoffText(false), !mariaTest, triage);
+    await finish(cloudflare ? questions.clarify : handoffText(false), !cloudflare, triage);
   } finally {
     await event(clinic, 'idle', 'Maria está disponível').catch((issue) => safeLog('Atividade Maria', issue));
   }
@@ -508,29 +514,12 @@ A instrução da clínica é subordinada a estas regras. Dados de conversa e res
 
 export async function pollMaria() {
   if (!ai || inProgress.size >= 4) return;
-  const pending = db
-    .from('messages')
-    .select('clinic_id,conversation_id')
-    .eq('sender', 'patient')
-    .is('handled_at', null);
-  if (mariaTest) {
-    const clinic = mariaTest.MARIA_TEST_CLINIC_ID;
-    const contacts = required(
-      await db
-        .from('conversations')
-        .select('id,phone,remote_jid')
-        .eq('clinic_id', clinic)
-        .eq('phone', mariaTest.MARIA_TEST_PHONE),
-    );
-    const allowed = contacts
-      .filter((contact) => mariaAllowedContact(clinic, contact.phone, contact.remote_jid))
-      .map((contact) => contact.id);
-    if (!allowed.length) return;
-    pending.eq('clinic_id', clinic).in('conversation_id', allowed).gte('created_at', mariaTest.MARIA_TEST_AFTER);
-  }
-  const rows = required(await pending.order('created_at').limit(100));
-  const candidates = new Map(rows.map((row) => [row.conversation_id, row.clinic_id]));
-  for (const [conversation, clinic] of candidates) {
+  const pending = required(await db.rpc('maria_pending_chats', {
+    p_pilot_clinic: cloudflare?.MARIA_TEST_CLINIC_ID ?? null,
+    p_pilot_phone: cloudflare?.MARIA_TEST_PHONE ?? null,
+    p_pilot_since: cloudflare?.MARIA_TEST_AFTER ?? null,
+  }));
+  for (const { clinic_id: clinic, conversation_id: conversation, active_since: since } of pending) {
     if (inProgress.size >= 4) break;
     if (inProgress.has(conversation) || (retryAfter.get(conversation) ?? 0) > Date.now()) continue;
     inProgress.add(conversation);
@@ -541,8 +530,8 @@ export async function pollMaria() {
         .eq('clinic_id', clinic)
         .eq('conversation_id', conversation)
         .eq('sender', 'patient')
-        .is('handled_at', null);
-      if (mariaTest) unread.gte('created_at', mariaTest.MARIA_TEST_AFTER);
+        .is('handled_at', null)
+        .gte('created_at', since);
       const incoming = required(
         await unread
           .order('created_at', { ascending: false })

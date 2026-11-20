@@ -1,7 +1,7 @@
 import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
 import { createClient } from '@supabase/supabase-js';
 import { z } from 'zod';
-import type { Database } from './database.js';
+import type { Database, Settings } from './database.js';
 
 const hexKey = /^[0-9a-f]{64}$/i;
 const base64Key = /^[A-Za-z0-9+/]{43}=$/;
@@ -23,7 +23,7 @@ export const config = z
   })
   .parse({ ...process.env, OPENAI_API_KEY: process.env.OPENAI_API_KEY || undefined });
 
-export const mariaTest = config.MARIA_PROVIDER === 'cloudflare'
+export const cloudflare = config.MARIA_PROVIDER === 'cloudflare'
   ? z.object({
       CLOUDFLARE_ACCOUNT_ID: z.string().regex(/^[0-9a-f]{32}$/i),
       CLOUDFLARE_API_TOKEN: z.string().trim().min(1),
@@ -34,14 +34,22 @@ export const mariaTest = config.MARIA_PROVIDER === 'cloudflare'
     }).parse({ ...process.env, MARIA_BOOKING_TAG_ID: process.env.MARIA_BOOKING_TAG_ID || undefined })
   : null;
 
-export function mariaEnabledFor(clinic: string) {
-  return mariaTest ? clinic === mariaTest.MARIA_TEST_CLINIC_ID : Boolean(config.OPENAI_API_KEY);
+export type MariaScope = { since: string; pilot: boolean; bookingTagId?: string };
+
+export function mariaScope(clinic: string, settings: Settings): MariaScope | null {
+  if (!cloudflare && !config.OPENAI_API_KEY) return null;
+  if (settings.maria_enabled === true && settings.maria_enabled_since) {
+    return { since: settings.maria_enabled_since, pilot: false, bookingTagId: settings.maria_booking_tag_id };
+  }
+  if (settings.maria_enabled === undefined && cloudflare?.MARIA_TEST_CLINIC_ID === clinic) {
+    return { since: cloudflare.MARIA_TEST_AFTER, pilot: true, bookingTagId: cloudflare.MARIA_BOOKING_TAG_ID };
+  }
+  return null;
 }
 
-export function mariaAllowedContact(clinic: string, phone: string | null, jid: string) {
-  if (!mariaTest) return true;
-  return clinic === mariaTest.MARIA_TEST_CLINIC_ID &&
-    phone === mariaTest.MARIA_TEST_PHONE &&
+export function mariaAllowedContact(scope: MariaScope, phone: string | null, jid: string) {
+  if (!scope.pilot) return /^\d+@(s\.whatsapp\.net|lid)$/.test(jid);
+  return phone === cloudflare?.MARIA_TEST_PHONE &&
     (jid === `${phone}@s.whatsapp.net` || /^\d+@lid$/.test(jid));
 }
 
@@ -59,6 +67,11 @@ export function required<R extends QueryResult>(response: R): NonNullable<R['dat
   const data = result(response);
   if (data == null) throw new Error('Resposta inesperada do banco.');
   return data;
+}
+
+export async function mariaScopeForClinic(clinic: string) {
+  const clinicRow = result(await db.from('clinics').select('settings').eq('id', clinic).maybeSingle());
+  return clinicRow ? mariaScope(clinic, clinicRow.settings) : null;
 }
 
 export function encrypt(value: string) {

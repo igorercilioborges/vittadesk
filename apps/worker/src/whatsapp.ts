@@ -10,7 +10,7 @@ import makeWASocket, {
   type WAMessage,
   type WASocket,
 } from '@whiskeysockets/baileys';
-import { db, decrypt, encrypt, mariaEnabledFor, required, result, safeLog } from './config.js';
+import { db, decrypt, encrypt, mariaScopeForClinic, required, result, safeLog } from './config.js';
 
 const instances = new Map<string, { socket: WASocket; ready: boolean }>();
 const retries = new Map<string, number>();
@@ -32,13 +32,14 @@ export const connectedSocket = (clinic: string) => {
 
 async function saveStatus(clinic: string, status: string, qr: string | null = null, phone?: string) {
   const updated_at = new Date().toISOString();
+  const scope = await mariaScopeForClinic(clinic);
   result(await db.from('whatsapp_qr').upsert({ clinic_id: clinic, qr_code: qr }));
   result(
     await db
       .from('whatsapp_sessions')
       .update({
         status,
-        maria_enabled: mariaEnabledFor(clinic),
+        maria_enabled: Boolean(scope),
         updated_at,
         ...(phone ? { phone_number: phone } : {}),
       })

@@ -5,6 +5,9 @@ export type Settings = {
   duration?: number;
   rules?: string;
   maria_auto_close?: boolean;
+  maria_enabled?: boolean;
+  maria_booking_tag_id?: string;
+  appointment_reminders_enabled?: boolean;
   hours?: Record<string, [string, string]>;
 };
 export type Clinic = { id: string; name: string; settings: Settings };
@@ -56,6 +59,7 @@ export type Chat = {
 export type Message = {
   id: string;
   conversation_id: string;
+  external_id?: string | null;
   sender: 'patient' | 'maria' | 'human';
   body: string;
   delivery: string;

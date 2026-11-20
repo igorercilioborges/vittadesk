@@ -247,13 +247,15 @@ export function Workspace() {
 
   const write: Write = async (table, action, values, id) => {
     if (table === 'clinics') {
+      const patch = values.settings as Clinic['settings'];
       if (supabase) {
-        const result = await supabase.from('clinics').update(values).eq('id', clinicId).select('id').single();
+        const result = await supabase.rpc('update_clinic_agent_settings', { p_clinic: clinicId, p_settings: patch });
         if (result.error) throw new Error(result.error.message);
+        if (!result.data) throw new Error('Você precisa gerenciar esta clínica para alterar os agentes.');
+        setClinics(items => items.map(clinic => clinic.id === clinicId ? { ...clinic, settings: result.data } : clinic));
+      } else {
+        setClinics(items => items.map(clinic => clinic.id === clinicId ? { ...clinic, settings: { ...clinic.settings, ...patch } } : clinic));
       }
-      setClinics((items) =>
-        items.map((clinic) => (clinic.id === clinicId ? { ...clinic, ...values } : clinic)),
-      );
       return;
     }
     const idKey = table === 'whatsapp_sessions' ? 'clinic_id' : 'id';
@@ -350,7 +352,7 @@ export function Workspace() {
   const canManage = role === 'admin' || role === 'manager';
   const canWrite = canManage || role === 'receptionist';
   const connection = scoped.whatsapp_sessions[0];
-  const mariaOnline = connection?.status === 'connected' && connection.maria_enabled;
+  const mariaOnline = connection?.status === 'connected' && (clinic.settings.maria_enabled ?? connection.maria_enabled);
   const timezone = clinic.settings.timezone || 'America/Sao_Paulo';
   const openAppointment = (row: Appointment | 'new', date?: string) => {
     setAppointmentDate(date);
@@ -574,7 +576,7 @@ export function Workspace() {
                 <ChatDesk data={scoped} write={write} canWrite={canWrite} timezone={timezone} />
               )}
               {screen === 'agents' && (
-                <Agents data={scoped} clinic={clinic} write={write} canManage={canManage} />
+                <Agents key={clinic.id} data={scoped} clinic={clinic} write={write} canManage={canManage} />
               )}
               {screen === 'connections' && (
                 <Connections

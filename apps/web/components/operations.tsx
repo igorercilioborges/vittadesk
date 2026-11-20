@@ -9,7 +9,6 @@ import {
   Headphones,
   Mail,
   MessageCircle,
-  Monitor,
   Pause,
   Play,
   ScanLine,
@@ -151,7 +150,8 @@ export function ChatDesk({
                 {messages.map((row) => (
                   <div key={row.id} className={`bubble ${row.sender}`}>
                     <small>
-                      {row.sender === 'patient' ? title : row.sender === 'maria' ? 'Maria' : 'Equipe'}
+                      {row.external_id?.startsWith('reminder:') ? 'Confirmação' :
+                        row.sender === 'patient' ? title : row.sender === 'maria' ? 'Maria' : 'Equipe'}
                     </small>
                     <p>{row.body}</p>
                     <small>
@@ -231,14 +231,25 @@ export function Agents({
   write: Write;
   canManage: boolean;
 }) {
-  const [rules, setRules] = useState(false);
+  const [rules, setRules] = useState<'settings' | 'activate' | null>(null);
+  const [updating, setUpdating] = useState(false);
+  const [agentError, setAgentError] = useState('');
+  const whatsapp = data.whatsapp_sessions[0];
+  const connected = whatsapp?.enabled && whatsapp.status === 'connected';
+  const mariaActive = clinic.settings.maria_enabled === true;
+  const pilot = clinic.settings.maria_enabled === undefined && whatsapp?.maria_enabled;
+  const remindersActive = clinic.settings.appointment_reminders_enabled === true;
+  const activating = rules === 'activate';
   const tz = clinic.settings.timezone || 'America/Sao_Paulo';
   const now = new TZDate(Date.now(), tz);
   const events = data.agent_events.slice().sort((a, b) => b.created_at.localeCompare(a.created_at));
   const today = events.filter((row) => isSameDay(now, new TZDate(row.created_at, tz)));
   const latest = events.find((row) => ['processing', 'scheduling', 'idle'].includes(row.action_type));
-  const state = !data.whatsapp_sessions.some((row) => row.status === 'connected' && row.maria_enabled)
-    ? 'Offline'
+  const state = !mariaActive && !pilot
+    ? 'Desativada'
+    : !connected
+    ? 'WhatsApp desconectado'
+    : pilot ? 'Em teste'
     : !latest || Date.now() - Date.parse(latest.created_at) > 120000
       ? 'Online'
       : latest.action_type === 'processing'
@@ -246,10 +257,24 @@ export function Agents({
         : latest.action_type === 'scheduling'
           ? 'Agendando'
           : 'Online';
+  const sentReminders = data.messages.filter(row => row.external_id?.startsWith('reminder:') &&
+    row.delivery === 'sent' && isSameDay(now, new TZDate(row.created_at, tz))).length;
+
+  async function changeAgents(settings: Partial<Clinic['settings']>) {
+    setAgentError('');
+    setUpdating(true);
+    try {
+      await write('clinics', 'update', { settings });
+    } catch (issue) {
+      setAgentError((issue as Error).message);
+    } finally {
+      setUpdating(false);
+    }
+  }
   return (
     <>
       <Heading title="Escritório virtual" description="Acompanhe a atividade dos agentes da clínica.">
-        {canManage && <Button onClick={() => setRules(true)}>Configurar Maria</Button>}
+        {canManage && <Button onClick={() => setRules('settings')} disabled={updating}>Configurar Maria</Button>}
       </Heading>
       <section className="office" aria-label="Estações do escritório virtual">
         <article className="station card">
@@ -258,26 +283,44 @@ export function Agents({
           </span>
           <h2>Maria</h2>
           <p>Triagem e agendamento</p>
-          <span className={`tag ${state === 'Offline' ? 'status-cancelled' : 'status-confirmed'}`}>
-            {state}
-          </span>
+          <div className="station-actions">
+            <span className={`tag ${connected && (mariaActive || pilot) ? 'status-confirmed' : 'status-cancelled'}`}>
+              {state}
+            </span>
+            {canManage && supabase && (
+              <Button disabled={updating} onClick={() => {
+                if (mariaActive) void changeAgents({ maria_enabled: false });
+                else setRules('activate');
+              }}>{mariaActive ? 'Desativar Maria' : 'Ativar Maria'}</Button>
+            )}
+          </div>
         </article>
-        {[
-          ['Confirmação ativa', CalendarCheck],
-          ['Pós-consulta', Headphones],
-        ].map(([label, icon]) => {
-          const Icon = icon as typeof Monitor;
-          return (
-            <article className="station card future-station" key={String(label)}>
-              <span className="tile-icon blue">
-                <Icon size={24} />
-              </span>
-              <h2>{String(label)}</h2>
-              <span className="tag">Em breve</span>
-            </article>
-          );
-        })}
+        <article className="station card">
+          <span className="tile-icon blue"><CalendarCheck size={24} /></span>
+          <h2>Confirmação de consultas</h2>
+          <p>Lembrete por WhatsApp às 8h no dia da consulta.</p>
+          <div className="station-actions">
+            <span className={`tag ${remindersActive && connected ? 'status-confirmed' : ''}`}>
+              {remindersActive ? (connected ? 'Ativo' : 'WhatsApp desconectado') : 'Desativado'}
+            </span>
+            {canManage && supabase && (
+              <Button disabled={updating} onClick={() => {
+                if (!remindersActive && !connected) {
+                  setAgentError('Conecte o WhatsApp da clínica para ativar os lembretes.');
+                  return;
+                }
+                void changeAgents({ appointment_reminders_enabled: !remindersActive });
+              }}>{remindersActive ? 'Desativar lembretes' : 'Ativar lembretes'}</Button>
+            )}
+          </div>
+        </article>
+        <article className="station card future-station">
+          <span className="tile-icon blue"><Headphones size={24} /></span>
+          <h2>Pós-consulta</h2>
+          <span className="tag">Em breve</span>
+        </article>
       </section>
+      {agentError && <p className="notice" role="alert">{agentError}</p>}
       <div className="charts">
         <section className="card record-panel">
           <div className="panel-title">
@@ -290,6 +333,7 @@ export function Agents({
             Consultas marcadas{' '}
             <strong>{today.filter((row) => row.action_type === 'appointment_booked').length}</strong>
           </p>
+          <p>Lembretes enviados <strong>{sentReminders}</strong></p>
         </section>
         <section className="card record-panel">
           <div className="panel-title">
@@ -310,8 +354,9 @@ export function Agents({
       </div>
       {rules && (
         <Modal
-          title="Configurar Maria"
-          close={() => setRules(false)}
+          title={activating ? 'Ativar Maria' : 'Configurar Maria'}
+          submitLabel={activating ? 'Ativar Maria' : 'Salvar'}
+          close={() => setRules(null)}
           onSave={async (fields) => {
             const hours = Object.fromEntries(
               Array.from({ length: 7 }, (_, index) => index + 1).flatMap((day) => {
@@ -323,15 +368,25 @@ export function Agents({
                 return [[day, [opens, closes]]];
               }),
             );
+            const tag = field(fields, 'booking_tag');
+            if (activating) {
+              if (!connected) throw new Error('Conecte o WhatsApp da clínica para ativar a Maria.');
+              if (!data.professionals.some(professional => professional.active) || !Object.keys(hours).length)
+                throw new Error('Cadastre ao menos um profissional ativo e os horários de atendimento.');
+            }
+            if ((activating || mariaActive) && !data.appointment_tags.some(row => row.id === tag))
+              throw new Error('Selecione uma etiqueta para os agendamentos da Maria.');
             await write('clinics', 'update', {
               settings: {
-                ...clinic.settings,
                 duration: Number(field(fields, 'duration')),
                 hours,
                 rules: field(fields, 'rules'),
                 maria_auto_close: fields.has('maria_auto_close'),
+                maria_booking_tag_id: tag || null,
+                ...(activating ? { maria_enabled: true } : {}),
               },
             });
+            if (activating) void wakeWhatsAppWorker(AbortSignal.timeout(90_000)).catch(() => {});
           }}
         >
           <div className="form-grid">
@@ -345,6 +400,14 @@ export function Agents({
                 required
                 defaultValue={clinic.settings.duration ?? 30}
               />
+            </label>
+            <label>
+              Etiqueta dos agendamentos da Maria
+              <select name="booking_tag" defaultValue={clinic.settings.maria_booking_tag_id ??
+                (data.appointment_tags.length === 1 ? data.appointment_tags[0].id : '')} required={activating || mariaActive}>
+                <option value="">Selecione uma etiqueta</option>
+                {data.appointment_tags.map(row => <option value={row.id} key={row.id}>{row.name}</option>)}
+              </select>
             </label>
             <label className="wide">
               Instruções da clínica

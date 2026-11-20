@@ -7,7 +7,15 @@ type Table<Row extends Record<string, unknown>> = {
 type Procedure<Args extends Record<string, unknown>, Returns> = { Args: Args; Returns: Returns };
 type Scoped = { clinic_id: string };
 type Encrypted = { iv: string; data: string; tag: string };
-type Settings = { timezone?: string; rules?: string; hours?: Record<string, [string, string]>; maria_auto_close?: boolean };
+export type Settings = {
+  timezone?: string;
+  rules?: string;
+  hours?: Record<string, [string, string]>;
+  maria_auto_close?: boolean;
+  maria_enabled?: boolean;
+  maria_enabled_since?: string;
+  maria_booking_tag_id?: string;
+};
 export type Slot = {
   professional_id: string;
   professional_name: string;
@@ -89,6 +97,11 @@ export type Database = {
     Views: Record<never, never>;
     Functions: {
       claim_worker: Procedure<{ p_owner: string }, boolean>;
+      maria_pending_chats: Procedure<
+        { p_pilot_clinic: string | null; p_pilot_phone: string | null; p_pilot_since: string | null },
+        { clinic_id: string; conversation_id: string; active_since: string }[]
+      >;
+      appointment_reminder_current: Procedure<{ p_clinic: string; p_message: string }, boolean>;
       configure_gmail: Procedure<
         { p_clinic: string; p_email: string; p_tokens: Encrypted | null; p_summary: boolean },
         undefined

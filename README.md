@@ -60,10 +60,18 @@ Cada clínica configura profissionais e etiquetas em **CRM & Financeiro**, além
 
 - O Blueprint gera automaticamente `SESSION_ENCRYPTION_KEY`. Em uma configuração manual, gere a chave com `openssl rand -hex 32`. Preserve essa chave entre deploys para restaurar a autenticação do Baileys e a senha SMTP.
 - Configure `WEB_ORIGIN` no worker com a origem da Vercel e `NEXT_PUBLIC_WORKER_URL` no painel com a URL HTTPS do Render. Em **Ferramentas & Conexões**, solicite a conexão e escaneie o QR pelo WhatsApp em **Aparelhos conectados**. A sessão é por clínica e é restaurada após reinicialização.
-- Configure `OPENAI_API_KEY` e `OPENAI_MODEL` no worker para ativar a Maria. A agente agrupa mensagens após três segundos de silêncio, consulta a agenda e encaminha urgências ou pedidos de atendimento humano. A integração usa mensagens do WhatsApp como contexto de recepção.
+- Configure o provedor de IA uma vez no worker. Para OpenAI, use `OPENAI_API_KEY` e `OPENAI_MODEL`. Depois de conectar o WhatsApp, cada administrador ou gerente pode clicar em **Agentes → Ativar Maria**, selecionar uma etiqueta padrão de agendamento e salvar os horários e as instruções. A agente agrupa mensagens após três segundos de silêncio, consulta a agenda da clínica e encaminha urgências ou pedidos de atendimento humano.
+- Em **Agentes → Ativar lembretes**, habilite a confirmação por WhatsApp às 8h no fuso da clínica. A fila inclui consultas agendadas ou confirmadas a partir das 8h e verifica a situação da consulta antes do envio. O mesmo horário de uma consulta gera um único lembrete na fila. Cadastre e habilite os atendimentos antes das 8h para que sejam incluídos no envio do dia.
 - No Gmail, habilite a verificação em duas etapas e gere uma senha de aplicativo. Informe a conta e a senha em **Ferramentas & Conexões**. Habilite o resumo diário para receber, a partir das 8h no fuso da clínica, os totais do dia anterior no e-mail configurado. A fila envia a confirmação de consultas confirmadas quando o paciente tem e-mail, incluindo agendamentos da Maria. O worker precisa de saída SMTP para o Gmail. Use um plano Render que permita conexões SMTP de saída.
 - O worker usa uma concessão de 90 segundos no banco para coordenar reinicializações. Use um único serviço Render por ambiente. A fila do WhatsApp conserva o histórico dos envios e exibe falhas no chat. Em uma interrupção entre o envio e a gravação da entrega, a fila pode tentar novamente com o mesmo identificador.
 - Para explorar o painel com dados fictícios, execute a web sem variáveis públicas do Supabase. As alterações de demonstração duram até a página ser recarregada.
+
+Cadastre o agendamento uma vez por ambiente no Supabase, usando a URL pública do worker em produção. O Cron verifica a agenda a cada minuto e pode acordar o worker três minutos antes das 8h quando há lembretes previstos.
+
+```sql
+select cron.schedule('vittadesk-appointment-reminders', '* * * * *',
+  $$select private.run_appointment_reminders('https://seu-worker.onrender.com/health')$$);
+```
 
 ## Organização das entregas
 
