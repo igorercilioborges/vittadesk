@@ -10,7 +10,7 @@ import makeWASocket, {
   type WAMessage,
   type WASocket,
 } from '@whiskeysockets/baileys';
-import { config, db, decrypt, encrypt, required, result, safeLog } from './config.js';
+import { db, decrypt, encrypt, mariaEnabledFor, required, result, safeLog } from './config.js';
 
 const instances = new Map<string, { socket: WASocket; ready: boolean }>();
 const retries = new Map<string, number>();
@@ -37,7 +37,7 @@ async function saveStatus(clinic: string, status: string, qr: string | null = nu
       .from('whatsapp_sessions')
       .update({
         status,
-        maria_enabled: Boolean(config.OPENAI_API_KEY),
+        maria_enabled: mariaEnabledFor(clinic),
         updated_at,
         ...(phone ? { phone_number: phone } : {}),
       })

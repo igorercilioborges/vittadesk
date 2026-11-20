@@ -1,4 +1,4 @@
-import { db, required, result, safeLog } from './config.js';
+import { db, mariaAllowedContact, mariaTest, required, result, safeLog } from './config.js';
 import { connectedSocket } from './whatsapp.js';
 
 export async function recoverOutbox() {
@@ -22,7 +22,7 @@ export async function sendOutbox() {
       const rows = required(
         await db
           .from('messages')
-          .select('id,conversation_id,body,sender,external_id,send_attempts')
+          .select('id,conversation_id,body,sender,external_id,send_attempts,created_at')
           .eq('clinic_id', clinic)
           .eq('delivery', 'queued')
           .lte('next_attempt', new Date().toISOString())
@@ -50,17 +50,21 @@ export async function sendOutbox() {
           const chat = required(
             await db
               .from('conversations')
-              .select('remote_jid,is_bot_paused')
+              .select('remote_jid,is_bot_paused,phone')
               .eq('clinic_id', clinic)
               .eq('id', row.conversation_id)
               .single(),
           );
-          if (chat.is_bot_paused && row.sender === 'maria' && !row.external_id?.startsWith('handoff:')) {
+          if (row.sender === 'maria' && (
+            !mariaAllowedContact(clinic, chat.phone, chat.remote_jid) ||
+            (mariaTest && Date.parse(row.created_at) < Date.parse(mariaTest.MARIA_TEST_AFTER)) ||
+            (chat.is_bot_paused && !row.external_id?.startsWith('handoff:'))
+          )) {
             result(await mark('failed'));
             continue;
           }
           const sent = await socket.sendMessage(
-            chat.remote_jid,
+            row.sender === 'maria' && mariaTest ? `${mariaTest.MARIA_TEST_PHONE}@s.whatsapp.net` : chat.remote_jid,
             { text: row.body },
             { messageId: row.id.replaceAll('-', '').toUpperCase() },
           );
