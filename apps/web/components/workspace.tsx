@@ -2,7 +2,6 @@
 
 import { useEffect, useRef, useState } from 'react';
 import {
-  Activity,
   ArrowLeftToLine,
   ArrowRightToLine,
   Bell,
@@ -22,6 +21,7 @@ import {
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Dashboard } from './dashboard';
+import { Brand } from './brand';
 import { Licenses } from './licenses';
 import { Agenda, AppointmentForm } from './agenda';
 import { Finance, Patients } from './records';
@@ -78,20 +78,6 @@ async function fetchTable(table: keyof Data, clinicId: string) {
     rows.push(...data);
     if (data.length < 500) return rows;
   }
-}
-
-function Brand() {
-  return (
-    <div className="brand">
-      <span className="brand-mark">
-        <Activity size={23} strokeWidth={2.6} />
-      </span>
-      <span>
-        Vitta<span>Desk</span>
-        <small>GESTÃO CLÍNICA</small>
-      </span>
-    </div>
-  );
 }
 
 export function Workspace() {

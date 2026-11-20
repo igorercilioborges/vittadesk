@@ -85,37 +85,13 @@ small {
   overflow: auto;
 }
 .brand {
-  display: flex;
-  align-items: center;
-  gap: 11px;
-  margin: 0 9px 41px;
-  color: #111d31;
-  font-size: 23px;
-  letter-spacing: -0.06em;
-  font-weight: 780;
-  line-height: 1;
-  white-space: nowrap;
+  width: min(190px, 100%);
+  margin: 0 auto 25px;
 }
-.brand > span > span {
-  color: #2563eb;
-}
-.brand small {
+.brand-logo {
   display: block;
-  margin-top: 6px;
-  font-size: 8.5px;
-  letter-spacing: 0.15em;
-  font-weight: 750;
-  color: #71819a;
-}
-.brand-mark {
-  display: grid;
-  place-items: center;
-  flex: 0 0 38px;
-  height: 38px;
-  border-radius: 12px;
-  background: #2563eb;
-  color: white;
-  box-shadow: 0 4px 9px #2563eb31;
+  width: 100%;
+  height: auto;
 }
 .sidebar nav {
   display: grid;
@@ -209,9 +185,20 @@ small {
   white-space: nowrap;
 }
 .collapsed .brand {
-  margin-left: 3px;
+  position: relative;
+  width: 48px;
+  height: 25px;
+  margin: 8px auto 32px;
+  overflow: hidden;
 }
-.collapsed .brand > span + span,
+.collapsed .brand-logo {
+  position: absolute;
+  top: -3px;
+  left: 50%;
+  width: 87px;
+  max-width: none;
+  transform: translateX(-50%);
+}
 .collapsed .nav-caption,
 .collapsed .sidebar a span,
 .collapsed .agent-shortcut > span + span,
@@ -1031,7 +1018,12 @@ input[type='checkbox'] {
   padding: 28px;
 }
 .login .brand {
-  margin: 0 0 22px;
+  width: min(240px, 100%);
+  margin: 0 auto 20px;
+}
+.license-workspace > .brand {
+  width: 170px;
+  margin: 0 0 12px;
 }
 .login h1 {
   font-size: 25px;
@@ -1095,7 +1087,16 @@ input[type='checkbox'] {
   .collapsed .collapse-button {
     display: none;
   }
-  .collapsed .brand > span + span,
+  .collapsed .brand {
+    width: min(190px, 100%);
+    height: auto;
+    margin: 0 auto 25px;
+  }
+  .collapsed .brand-logo {
+    position: static;
+    width: 100%;
+    transform: none;
+  }
   .collapsed .nav-caption,
   .collapsed .sidebar a span,
   .collapsed .agent-shortcut > span + span {

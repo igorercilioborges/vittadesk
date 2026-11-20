@@ -31,7 +31,7 @@ Use Node.js 22 ou superior. Instale com `npm ci`, aplique a migration em um proj
 - **Vercel.** Importe `igorercilioborges/vittadesk` como projeto Next.js, selecione `apps/web` como Root Directory e habilite arquivos fora do diretório raiz. Use a instalação padrão do monorepo. Configure as variáveis de `apps/web/.env.example`, configure `main` como Production Branch e mantenha a integração Git ativa.
 - **Render.** Crie um Web Service Node vinculado a `main` no mesmo repositório. Deixe Root Directory vazio para acessar o lockfile e use Build Command `npm ci --include=dev && npm run build -w @vittadesk/worker` e Start Command `npm run start -w @vittadesk/worker`. Use `/health` como Health Check Path, habilite auto-deploy e configure as variáveis de `apps/worker/.env.example`. Selecione uma instância que permaneça ativa.
 
-Aplique migrations antes de publicar código que dependa delas. Mantenha a chave de serviço do Supabase apenas no worker.
+Aplique migrations antes de publicar código que dependa delas. A chave de serviço do Supabase é usada no worker e na Edge Function, em ambiente de servidor.
 
 ## Configurar login e licenças
 
@@ -46,7 +46,9 @@ values ('00000000-0000-0000-0000-000000000000');
 
 Entre no VittaDesk com essa conta e abra **Licenças**. A área aparece automaticamente se a conta ainda não está vinculada a uma clínica. Se já estiver, abra **Gerenciar licenças** no menu de perfil. Use **Alterar senha** para trocar a senha temporária.
 
-Cadastre as clínicas em **Nova clínica**. Para cada usuário, crie e confirme a conta por e-mail em **Authentication → Users** e depois use **Liberar licença** para vincular o e-mail à clínica e atribuir um perfil. A mesma operação atualiza o perfil se o vínculo já existir. Revogar uma licença remove apenas o acesso à clínica daquele vínculo e preserva os registros da clínica. Uma conta pode ter licenças para clínicas diferentes.
+Cadastre as clínicas em **Nova clínica**. Em **Cadastrar usuário**, informe o nome, e-mail, senha inicial, clínica e perfil. O VittaDesk cria a conta e o acesso à clínica em uma única transação. Para uma conta existente, use **Liberar licença** para adicionar uma clínica ou atualizar o perfil. Revogar uma licença encerra o acesso à clínica daquele vínculo e preserva os registros. Uma conta pode ter licenças para clínicas diferentes.
+
+Publique a Edge Function com `supabase functions deploy license-users` após aplicar as migrations. A função valida a sessão e a permissão da conta proprietária antes de acessar a API administrativa de autenticação.
 
 Cada clínica configura profissionais e etiquetas em **CRM & Financeiro**, além de horário de funcionamento, duração e regras em **Agentes**. O fuso inicial é `America/Sao_Paulo` e pode ser ajustado em `clinics.settings.timezone`. Use números de telefone em formato internacional, apenas dígitos no banco.
 

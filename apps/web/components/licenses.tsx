@@ -1,8 +1,9 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import type { SupabaseClient } from '@supabase/supabase-js';
+import { FunctionsHttpError, type SupabaseClient } from '@supabase/supabase-js';
 import { Button } from '@/components/ui/button';
+import { Brand } from './brand';
 import { field, Heading, Modal } from './forms';
 
 const roles = {
@@ -20,7 +21,7 @@ type License = {
   role: keyof typeof roles;
 };
 type Snapshot = { clinics: Clinic[]; licenses: License[] };
-type Action = 'clinic' | 'grant' | 'password' | License;
+type Action = 'clinic' | 'register' | 'grant' | 'password' | License;
 
 export function Licenses({
   client,
@@ -66,6 +67,30 @@ export function Licenses({
       return;
     }
 
+    if (action === 'register') {
+      const password = String(values.get('password') ?? '');
+      if (password !== values.get('confirmation')) throw new Error('As senhas não coincidem.');
+      const { error } = await client.functions.invoke('license-users', {
+        body: {
+          clinicId: field(values, 'clinic'),
+          email: field(values, 'email'),
+          name: field(values, 'name'),
+          role: field(values, 'role'),
+          password,
+        },
+      });
+      if (error) {
+        if (error instanceof FunctionsHttpError) {
+          const response = await error.context.json().catch(() => null);
+          if (typeof response?.message === 'string') throw new Error(response.message);
+        }
+        throw new Error('Não foi possível comunicar com o serviço de cadastro.');
+      }
+      setRefresh((current) => current + 1);
+      refreshAccount();
+      return;
+    }
+
     const response =
       action === 'clinic'
         ? await client.rpc('license_admin_create_clinic', {
@@ -88,14 +113,17 @@ export function Licenses({
   const title =
     action === 'clinic'
       ? 'Nova clínica'
-      : action === 'grant'
-        ? 'Liberar licença'
-        : action === 'password'
-          ? 'Alterar minha senha'
-          : 'Revogar licença';
+      : action === 'register'
+        ? 'Cadastrar usuário'
+        : action === 'grant'
+          ? 'Liberar licença'
+          : action === 'password'
+            ? 'Alterar minha senha'
+            : 'Revogar licença';
 
   return (
-    <main className="main">
+    <main className="main license-workspace">
+      <Brand />
       <Heading title="Licenças" description={email}>
         <div className="toolbar-group">
           {openClinic && <Button onClick={openClinic}>Painel da clínica</Button>}
@@ -108,8 +136,15 @@ export function Licenses({
           <h2>Acessos por clínica</h2>
           <div className="toolbar-group">
             <Button onClick={() => setAction('clinic')}>Nova clínica</Button>
-            <Button variant="default" disabled={!snapshot.clinics.length} onClick={() => setAction('grant')}>
+            <Button disabled={!snapshot.clinics.length} onClick={() => setAction('grant')}>
               Liberar licença
+            </Button>
+            <Button
+              variant="default"
+              disabled={!snapshot.clinics.length}
+              onClick={() => setAction('register')}
+            >
+              Cadastrar usuário
             </Button>
           </div>
         </div>
@@ -173,7 +208,7 @@ export function Licenses({
                 </label>
               </>
             )}
-            {action === 'grant' && (
+            {(action === 'grant' || action === 'register') && (
               <>
                 <label>
                   Clínica
@@ -186,7 +221,7 @@ export function Licenses({
                   </select>
                 </label>
                 <label>
-                  E-mail cadastrado no Supabase Auth
+                  E-mail
                   <input type="email" name="email" required />
                 </label>
                 <label>
@@ -205,25 +240,27 @@ export function Licenses({
                 </label>
               </>
             )}
-            {action === 'password' && (
+            {(action === 'password' || action === 'register') && (
               <>
                 <label>
-                  Nova senha
+                  {action === 'register' ? 'Senha inicial' : 'Nova senha'}
                   <input
                     name="password"
                     type="password"
                     autoComplete="new-password"
-                    minLength={12}
+                    minLength={action === 'register' ? 6 : 12}
+                    maxLength={72}
                     required
                   />
                 </label>
                 <label>
-                  Confirme a nova senha
+                  Confirme a senha
                   <input
                     name="confirmation"
                     type="password"
                     autoComplete="new-password"
-                    minLength={12}
+                    minLength={action === 'register' ? 6 : 12}
+                    maxLength={72}
                     required
                   />
                 </label>

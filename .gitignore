@@ -25,3 +25,5 @@ library-files/
 .aws/
 
 next-env.d.ts
+
+generated_images/
