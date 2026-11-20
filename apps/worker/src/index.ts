@@ -68,6 +68,7 @@ app.get('/health', (_req, res) => {
     mariaConfigured: Boolean(mariaTest || config.OPENAI_API_KEY),
     mariaProvider: config.MARIA_PROVIDER,
     mariaTestOnly: Boolean(mariaTest),
+    mariaRealBooking: Boolean(mariaTest?.MARIA_BOOKING_TAG_ID),
   });
 });
 app.use('/gmail', (req, res, next) => {

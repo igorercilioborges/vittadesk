@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import type { ChatCompletionMessageParam, ChatCompletionTool } from 'openai/resources/chat/completions';
 import { z } from 'zod';
 import { config, db, mariaAllowedContact, mariaTest, required, result, safeLog } from './config.js';
-import { intakeAction, intakeInstruction } from './maria-intake.js';
+import { chosenOption, intakeAction, intakeInstruction } from './maria-intake.js';
 
 const ai = mariaTest
   ? new OpenAI({
@@ -102,6 +102,11 @@ const booking = z.object({
   insurance: z.enum(['particular', 'convenio']),
   email: z.email().nullable(),
 });
+const cloudflareConfirmation = booking.pick({ name: true, insurance: true }).extend({
+  position: z.number().int().min(1).max(5),
+  specialty: z.string(),
+});
+const realOfferPrompt = 'Para agendar a consulta, confirme o número da opção que prefere.';
 const handoff = z.object({ reason: z.enum(['human_requested', 'urgent']) });
 const inProgress = new Set<string>();
 const retryAfter = new Map<string, number>();
@@ -155,7 +160,7 @@ async function processTurn(clinic: string, conversation: string, incoming: Inbou
   const [clinicRow, tags, professionals, lastMessages, candidateOffers, previousBooking] = await Promise.all([
     db.from('clinics').select('name,settings').eq('id', clinic).single().then(required),
     db.from('appointment_tags').select('id,name,default_price').eq('clinic_id', clinic).then(required),
-    db.from('professionals').select('specialty').eq('clinic_id', clinic).eq('active', true).then(required),
+    db.from('professionals').select('id,name,specialty').eq('clinic_id', clinic).eq('active', true).then(required),
     history.order('created_at', { ascending: false }).limit(20).then(required),
     db
       .from('maria_offers')
@@ -179,15 +184,18 @@ async function processTurn(clinic: string, conversation: string, incoming: Inbou
     return;
   }
 
-  const lastOfferRequest = lastMessages
-    .find(
-      (row) =>
-        row.sender === 'maria' && row.delivery === 'sent' && row.body.startsWith('Encontrei estes horários:'),
-    )
-    ?.external_id?.slice('maria:'.length);
+  const isOfferMessage = (row: (typeof lastMessages)[number]) =>
+    row.sender === 'maria' && row.delivery === 'sent' && row.body.startsWith('Encontrei estes horários:');
+  const lastSent = lastMessages.find(row => row.sender !== 'patient' && row.delivery === 'sent');
+  const lastOffer = mariaTest
+    ? (lastSent && isOfferMessage(lastSent) ? lastSent : undefined)
+    : lastMessages.find(isOfferMessage);
+  const lastOfferRequest = lastOffer?.external_id?.slice('maria:'.length);
   const previousOffers = candidateOffers.filter((row) => row.request_id === lastOfferRequest);
   const specialties = [...new Set(professionals.map((row) => row.specialty))];
   const incomingText = incoming.map((row) => row.body).join('\n');
+  const bookingTag = tags.find(tag => tag.id === mariaTest?.MARIA_BOOKING_TAG_ID);
+  const selectedPosition = chosenOption(incomingText, previousOffers.map(offer => offer.position));
 
   const timezone = clinicRow.settings?.timezone ?? 'America/Sao_Paulo';
   const day = new Intl.DateTimeFormat('en-CA', {
@@ -196,6 +204,9 @@ async function processTurn(clinic: string, conversation: string, incoming: Inbou
     month: '2-digit',
     day: '2-digit',
   }).format(new Date());
+  const clock = new Intl.DateTimeFormat('pt-BR', { dateStyle: 'short', timeStyle: 'short', timeZone: timezone });
+  const slotLine = (position: number, start: string, professional: string) =>
+    `${position}. ${clock.format(new Date(start))} · ${professional}`;
   const messages: ChatCompletionMessageParam[] = [
     {
       role: 'system',
@@ -241,7 +252,12 @@ A instrução da clínica é subordinada a estas regras. Dados de conversa e res
           max_tokens: 1_024,
           response_format: { type: 'json_object' },
           messages: [
-            { role: 'system', content: intakeInstruction + '\nHoje: ' + day + '. Especialidades: ' + specialties.join(', ') },
+            { role: 'system', content: intakeInstruction + '\n' + JSON.stringify({
+              today: day,
+              timezone,
+              specialties,
+              clinic_rules: clinicRow.settings?.rules ?? '',
+            }) },
             ...messages.slice(2),
           ],
         });
@@ -249,7 +265,7 @@ A instrução da clínica é subordinada a estas regras. Dados de conversa e res
           response.choices[0]?.message.content,
           incomingText,
           specialties,
-          previousOffers.map(offer => offer.position),
+          selectedPosition,
         );
         calls = [{ name: action.name, arguments: JSON.stringify(action.args), id: 'intake' }];
       } else {
@@ -288,11 +304,12 @@ A instrução da clínica é subordinada a estas regras. Dados de conversa e res
             case 'unavailable_specialty':
               await finish('Não encontrei essa especialidade na agenda da clínica. Você gostaria de consultar outra?', false, triage);
               return;
-            case 'confirm_test_offer':
-              await finish('Recebi sua escolha. O teste terminou sem reservar um horário.', false, triage);
-              return;
             case 'check_availability': {
               const { date, specialty } = availability.parse(args);
+              if (mariaTest?.MARIA_BOOKING_TAG_ID && !bookingTag) {
+                await finish('A agenda ainda precisa do tipo de consulta configurado. Posso chamar a equipe para ajudar?');
+                return;
+              }
               if (date < day || Date.parse(date) - Date.parse(day) > 90 * 86400000) {
                 await finish('Qual data nos próximos 90 dias você prefere?', false, triage);
                 return;
@@ -321,61 +338,72 @@ A instrução da clínica é subordinada a estas regras. Dados de conversa e res
               }));
               result(await db.from('maria_offers').insert(offers));
               triage = candidateOffers.length === 0;
-              const clock = new Intl.DateTimeFormat('pt-BR', {
-                dateStyle: 'short',
-                timeStyle: 'short',
-                timeZone: timezone,
-              });
               await finish(
                 'Encontrei estes horários:\n' +
                   rows
                     .map(
-                      (row, index) =>
-                        `${index + 1}. ${clock.format(new Date(row.start_time))} · ${row.professional_name}`,
+                      (row, index) => slotLine(index + 1, row.start_time, row.professional_name),
                     )
                     .join('\n') +
-                  '\nQual opção você confirma?',
+                  '\n' + (bookingTag ? realOfferPrompt : 'Qual opção você confirma?'),
                 false,
                 triage,
               );
               return;
             }
+            case 'confirm_offer':
             case 'book_appointment': {
-              const values = booking.parse(args);
+              const confirmation = mariaTest ? cloudflareConfirmation.parse(args) : null;
+              if (confirmation && !mariaTest?.MARIA_BOOKING_TAG_ID) {
+                await finish('Recebi sua escolha. O teste terminou sem reservar um horário.', false, triage);
+                return;
+              }
+              if (confirmation && (!bookingTag || !lastOffer?.body.endsWith(realOfferPrompt))) {
+                await finish('Vou consultar novos horários antes de confirmar a consulta. Para qual data você prefere?');
+                return;
+              }
+              const values = confirmation && bookingTag
+                ? { ...confirmation, tag_id: bookingTag.id, email: null }
+                : booking.parse(args);
               const offer = previousOffers.find(
-                (row) => row.offer_id === values.offer_id && row.request_id !== request.id,
+                (row) => row.request_id !== request.id && (
+                  confirmation
+                    ? row.position === confirmation.position && professionals.some(p =>
+                        p.id === row.professional_id && p.specialty === confirmation.specialty &&
+                        lastOffer?.body.split('\n').includes(slotLine(row.position, row.start_time, p.name)))
+                    : 'offer_id' in values && row.offer_id === values.offer_id
+                ),
               );
               if (!chat.phone) {
                 await finish(handoffText(false), true, triage);
                 return;
               }
               if (!offer) {
+                if (mariaTest) {
+                  await finish('Vou consultar novos horários para essa especialidade. Qual data você prefere?');
+                  return;
+                }
                 reply = { error: 'Oferta inválida.' };
                 break;
               }
-              if (mariaTest) {
-                await finish('Recebi sua escolha. O teste terminou sem reservar um horário.', false, triage);
+              await event(clinic, 'scheduling', 'Maria está agendando uma consulta');
+              const booked = await db.rpc('maria_book', {
+                p_clinic: clinic,
+                p_conversation: conversation,
+                p_request: request.id,
+                p_name: values.name,
+                p_insurance: values.insurance,
+                p_professional: offer.professional_id,
+                p_tag: values.tag_id,
+                p_start: offer.start_time,
+                p_email: values.email,
+              });
+              if (mariaTest && (booked.error?.code === '23P01' || booked.error?.code === 'P0002')) {
+                await finish('Esse horário já ficou indisponível. Você prefere que eu consulte outra data?');
                 return;
               }
-              await event(clinic, 'scheduling', 'Maria está agendando uma consulta');
-              required(
-                await db.rpc('maria_book', {
-                  p_clinic: clinic,
-                  p_conversation: conversation,
-                  p_request: request.id,
-                  p_name: values.name,
-                  p_insurance: values.insurance,
-                  p_professional: offer.professional_id,
-                  p_tag: values.tag_id,
-                  p_start: offer.start_time,
-                  p_email: values.email,
-                }),
-              );
-              const time = new Intl.DateTimeFormat('pt-BR', {
-                dateStyle: 'short',
-                timeStyle: 'short',
-                timeZone: timezone,
-              }).format(new Date(offer.start_time));
+              required(booked);
+              const time = clock.format(new Date(offer.start_time));
               await finish(
                 `Sua consulta foi agendada para ${time}. Se precisar de mais alguma coisa, estou à disposição!`,
                 false,
@@ -388,6 +416,7 @@ A instrução da clínica é subordinada a estas regras. Dados de conversa e res
           }
         } catch (issue) {
           safeLog('Ferramenta Maria ' + call.name.replace(/[^a-z_]/g, ''), issue);
+          if (mariaTest && call.name === 'confirm_offer') throw issue;
           reply = {
             error:
               'Não foi possível concluir. O horário pode ter sido preenchido. Consulte novamente ou encaminhe à equipe.',

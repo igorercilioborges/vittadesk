@@ -30,7 +30,8 @@ export const mariaTest = config.MARIA_PROVIDER === 'cloudflare'
       MARIA_TEST_CLINIC_ID: z.uuid(),
       MARIA_TEST_PHONE: z.string().regex(/^[1-9][0-9]{7,14}$/),
       MARIA_TEST_AFTER: z.iso.datetime({ offset: true }),
-    }).parse(process.env)
+      MARIA_BOOKING_TAG_ID: z.uuid().optional(),
+    }).parse({ ...process.env, MARIA_BOOKING_TAG_ID: process.env.MARIA_BOOKING_TAG_ID || undefined })
   : null;
 
 export function mariaEnabledFor(clinic: string) {

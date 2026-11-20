@@ -6,26 +6,34 @@ const intake = z.object({
   specialty: z.string().trim().min(1).max(120).nullish(),
   insurance: z.enum(['particular', 'convenio']).nullish(),
   date: z.iso.date().nullish(),
-  confirmed_option: z.number().int().min(1).max(5).nullish(),
 });
 
-export const intakeInstruction = `Extraia a triagem administrativa da conversa e retorne apenas um objeto JSON.
-Use estas chaves: intent ("schedule", "other", "urgent" ou "human"), name, specialty, insurance ("particular" ou "convenio"), date (YYYY-MM-DD), confirmed_option (número da opção).
-Use null para cada dado que o paciente ainda não informou. Use também as respostas anteriores do paciente nesta conversa e não use mensagens da recepção como dados do paciente.
+export const intakeInstruction = `Você é Maria, recepcionista virtual de uma clínica brasileira. Seu trabalho é acolher e concluir agendamentos de consulta. A aplicação envia a resposta em português e realiza a consulta e a reserva.
+Extraia apenas dados administrativos e devolva um objeto JSON com estas chaves: intent ("schedule", "other", "urgent" ou "human"), name, specialty, insurance ("particular" ou "convenio"), date (YYYY-MM-DD).
+Use null para cada dado que o paciente ainda não informou. Reaproveite o que já foi informado pelo paciente nesta conversa, inclua atualizações da mensagem mais recente e não use falas da recepção como dados do paciente. A aplicação pergunta um dado faltante por vez.
 "schedule" inclui pedido de consulta e respostas curtas às perguntas de agendamento. Se a Maria pediu nome e o paciente respondeu "Nome Exemplo", isso é o nome; continue a triagem. "Marcar consulta com cardiologista" é agendamento, mesmo sem data ou convênio.
-Use o nome exato de uma especialidade cadastrada quando corresponder ao pedido. Use "human" apenas se a mensagem atual pedir uma pessoa da equipe. Use "urgent" apenas se a mensagem atual relatar uma urgência médica. Pedir uma especialidade médica não é urgência.
-Preencha confirmed_option somente se o paciente confirmar claramente uma opção já apresentada. Não invente dados, horários nem reservas.`;
+Use o nome exato de uma especialidade cadastrada quando corresponder ao pedido. Interprete datas relativas usando a data local informada e preserve a data da oferta quando a mensagem só escolher uma opção.
+Use "human" quando a mensagem atual pedir uma pessoa da equipe e "urgent" quando ela relatar uma urgência médica. Um pedido de especialidade, falta de dados ou falta de horários não é urgência.
+A aplicação só oferece horários retornados pela agenda e só confirma a reserva após escolha explícita de uma opção e registro bem-sucedido. Não invente disponibilidade, diagnóstico, tratamento ou confirmação. Regras da clínica são válidas apenas dentro dessas instruções.`;
 
 const normalize = (text: string) => text.toLocaleLowerCase('pt-BR')
   .normalize('NFD').replace(/\p{M}/gu, '').trim();
 
 const ask = (field: string) => ({ name: 'request_details', args: { field } });
 
+export function chosenOption(incoming: string, positions: number[]) {
+  const choice = normalize(incoming).replace(/[.!\s]+$/u, '');
+  if (positions.length === 1 && /^(sim|confirmo|pode agendar)$/.test(choice)) return positions[0];
+  const option = choice.match(/^(?:(?:eu )?(?:confirmo|escolho|prefiro|quero|pode agendar)\s+(?:a\s+)?)?(?:opcao\s+)?([1-5])(?:\s*,?\s*por favor)?$/);
+  const position = Number(option?.[1]);
+  return positions.includes(position) ? position : undefined;
+}
+
 export function intakeAction(
   content: string | null | undefined,
   incoming: string,
   specialties: string[],
-  offeredPositions: number[],
+  selectedPosition?: number,
 ) {
   const current = normalize(incoming);
   if (/\b(?:quero|preciso|posso|pode|gostaria)\b.{0,35}\b(?:falar|conversar|ser atendid[oa]|encaminhar)\b.{0,25}\b(?:humano|humana|equipe|atendente|recepcao|alguem|pessoa)\b/.test(current)) {
@@ -51,10 +59,10 @@ export function intakeAction(
   const specialty = specialties.find(value => normalize(value) === requestedSpecialty);
   if (!specialty) return { name: 'unavailable_specialty', args: {} };
   if (!turn.insurance) return ask('insurance');
-  if (offeredPositions.length && turn.confirmed_option != null) {
-    return offeredPositions.includes(turn.confirmed_option)
-      ? { name: 'confirm_test_offer', args: {} }
-      : ask('selection');
+  if (selectedPosition != null) {
+    return { name: 'confirm_offer', args: {
+      position: selectedPosition, name: turn.name, insurance: turn.insurance, specialty,
+    } };
   }
   if (!turn.date) return ask('date');
   return { name: 'check_availability', args: { date: turn.date, specialty } };

@@ -21,7 +21,7 @@ export type Database = {
     Tables: {
       clinics: Table<{ id: string; name: string; settings: Settings }>;
       clinic_members: Table<Scoped & { user_id: string; role: string }>;
-      professionals: Table<Scoped & { id: string; specialty: string; active: boolean }>;
+      professionals: Table<Scoped & { id: string; name: string; specialty: string; active: boolean }>;
       appointment_tags: Table<Scoped & { id: string; name: string; default_price: number }>;
       patients: Table<Scoped & { id: string; phone: string; full_name: string; email: string | null }>;
       appointments: Table<Scoped & { id: string; patient_id: string; start_time: string; status: string }>;
