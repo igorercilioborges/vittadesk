@@ -23,8 +23,8 @@ export type Database = {
       clinic_members: Table<Scoped & { user_id: string; role: string }>;
       professionals: Table<Scoped & { id: string; name: string; specialty: string; active: boolean }>;
       appointment_tags: Table<Scoped & { id: string; name: string; default_price: number }>;
-      patients: Table<Scoped & { id: string; phone: string; full_name: string; email: string | null }>;
-      appointments: Table<Scoped & { id: string; patient_id: string; start_time: string; status: string }>;
+      patients: Table<Scoped & { id: string; phone: string; full_name: string; email: string | null; insurance_type: 'particular' | 'convenio' }>;
+      appointments: Table<Scoped & { id: string; patient_id: string; professional_id: string; start_time: string; status: string }>;
       conversations: Table<
         Scoped & {
           id: string;

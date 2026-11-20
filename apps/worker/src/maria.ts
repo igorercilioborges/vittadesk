@@ -3,8 +3,9 @@ import { randomUUID } from 'node:crypto';
 import type { ChatCompletionMessageParam, ChatCompletionTool } from 'openai/resources/chat/completions';
 import { z } from 'zod';
 import { config, db, mariaAllowedContact, mariaTest, required, result, safeLog } from './config.js';
-import { chosenOption, intakeAction, intakeInstruction, wantsToClose } from './maria-intake.js';
+import { chosenOption, intakeAction, intakeInstruction, isThanks, startsScheduling, wantsToClose } from './maria-intake.js';
 import { addCalendarDays, consultationOptions } from './maria-availability.js';
+import { answerAboutAppointment } from './maria-appointments.js';
 
 const ai = mariaTest
   ? new OpenAI({
@@ -18,13 +19,14 @@ const ai = mariaTest
     : null;
 
 const questions = {
-  name: 'Olá! Sou a Maria, assistente da clínica. Qual é o seu nome completo?',
+  name: 'Claro, posso ajudar com o agendamento! Qual é o seu nome completo?',
   specialty: 'Qual especialidade você procura ou qual tipo de consulta deseja marcar?',
   insurance: 'O atendimento será particular ou por convênio?',
   date: 'Para qual data você gostaria que eu consultasse horários?',
   email: 'Se quiser receber a confirmação por e-mail, pode me informar seu endereço.',
   selection: 'Qual das opções apresentadas você confirma?',
-  clarify: 'Posso ajudar com triagem e agendamento. Como posso ajudar?',
+  greeting: 'Oi! Sou a Maria, da recepção. Como posso ajudar você hoje?',
+  clarify: 'Como posso ajudar? Posso consultar uma reserva, tirar dúvidas sobre a clínica ou agendar uma consulta.',
 } as const;
 
 const tools: ChatCompletionTool[] = [
@@ -99,7 +101,14 @@ const availability = z.object({
   date: z.iso.date(),
   specialty: z.string().max(120),
   preferredTime: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/).optional(),
+  insurance: z.enum(['particular', 'convenio']).optional(),
 });
+const appointmentQuestion = z.object({
+  date: z.iso.date().nullish(),
+  time: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/).nullish(),
+  detail: z.enum(['summary', 'payment']),
+});
+const clinicQuestion = z.object({ topic: z.enum(['hours', 'specialties', 'rules']).nullish(), answer: z.string().nullish() });
 const booking = z.object({
   offer_id: z.uuid(),
   tag_id: z.uuid(),
@@ -113,6 +122,9 @@ const cloudflareConfirmation = booking.pick({ name: true, insurance: true }).ext
 });
 const realOfferPrompt = 'Para agendar a consulta, confirme o número da opção que prefere.';
 const closingLine = 'Atendimento encerrado. Se precisar de algo mais, é só mandar uma nova mensagem.';
+const thanksReply = 'Por nada! Se precisar, estou por aqui.';
+const bookingPrefix = 'Sua consulta foi agendada';
+const weekdays = ['segunda', 'terça', 'quarta', 'quinta', 'sexta', 'sábado', 'domingo'];
 const handoff = z.object({ reason: z.enum(['human_requested', 'urgent']) });
 const inProgress = new Set<string>();
 const retryAfter = new Map<string, number>();
@@ -132,7 +144,7 @@ async function processTurn(clinic: string, conversation: string, incoming: Inbou
   const chat = required(
     await db
       .from('conversations')
-      .select('is_bot_paused,phone,remote_jid')
+      .select('is_bot_paused,phone,remote_jid,patient_id')
       .eq('clinic_id', clinic)
       .eq('id', conversation)
       .single(),
@@ -166,7 +178,7 @@ async function processTurn(clinic: string, conversation: string, incoming: Inbou
   const [clinicRow, tags, professionals, lastMessages, candidateOffers, previousBooking] = await Promise.all([
     db.from('clinics').select('name,settings').eq('id', clinic).single().then(required),
     db.from('appointment_tags').select('id,name,default_price').eq('clinic_id', clinic).then(required),
-    db.from('professionals').select('id,name,specialty').eq('clinic_id', clinic).eq('active', true).then(required),
+    db.from('professionals').select('id,name,specialty,active').eq('clinic_id', clinic).then(required),
     history.order('created_at', { ascending: false }).limit(20).then(required),
     db
       .from('maria_offers')
@@ -188,18 +200,31 @@ async function processTurn(clinic: string, conversation: string, incoming: Inbou
   const autoClose = clinicRow.settings?.maria_auto_close !== false;
   const close = (reply: string, triage = false) => finish(`${reply}\n${closingLine}`, false, triage);
   if (previousBooking) {
-    if (autoClose) await close('Sua consulta foi agendada.');
-    else await finish('Sua consulta foi agendada.');
+    if (autoClose) await close(`${bookingPrefix}.`);
+    else await finish(`${bookingPrefix}.`);
     return;
   }
 
-  const lastClosing = lastMessages.findIndex(row => row.sender === 'maria' && row.body.endsWith('\n' + closingLine));
-  const activeHistory = lastClosing === -1 ? lastMessages : lastMessages.slice(0, lastClosing);
+  const lastClosing = lastMessages.findIndex(row => row.sender === 'maria' &&
+    (row.body.startsWith(bookingPrefix) || row.body.endsWith('\n' + closingLine)));
+  const historySinceClosing = lastClosing === -1 ? lastMessages : lastMessages.slice(0, lastClosing);
+  const chronologicalHistory = historySinceClosing.slice().reverse();
+  const newRequest = chronologicalHistory.findIndex(row => row.sender === 'patient' && startsScheduling(row.body));
+  const bookingInProgress = newRequest !== -1;
+  const activeHistory = lastClosing === -1 ? historySinceClosing : bookingInProgress
+    ? chronologicalHistory.slice(newRequest).reverse()
+    : [];
   const incomingText = incoming.map((row) => row.body).join('\n');
+  if (isThanks(incomingText)) {
+    await finish(thanksReply);
+    return;
+  }
   if (autoClose && wantsToClose(incomingText)) {
-    const alreadyClosed = lastClosing !== -1 && activeHistory.every(row => row.sender === 'patient' && wantsToClose(row.body));
-    if (alreadyClosed) await finish(null);
-    else await close('Agradeço o contato!');
+    await close('Agradeço o contato!');
+    return;
+  }
+  if (lastClosing !== -1 && !bookingInProgress && /^(?:conv[eê]nio|particular)[.!\s]*$/iu.test(incomingText.trim())) {
+    await finish('Você quer tirar uma dúvida sobre a consulta que já está marcada ou agendar um novo atendimento?');
     return;
   }
 
@@ -207,17 +232,18 @@ async function processTurn(clinic: string, conversation: string, incoming: Inbou
     row.sender === 'maria' && row.delivery === 'sent' &&
     (row.body.startsWith('Encontrei estes horários:') || row.body.includes('\nEncontrei estes horários:'));
   const lastSent = activeHistory.find(row =>
-    row.sender !== 'patient' && ['sent', 'queued', 'processing'].includes(row.delivery));
+    row.sender !== 'patient' && row.body !== thanksReply && ['sent', 'queued', 'processing'].includes(row.delivery));
   const lastOffer = mariaTest
     ? (lastSent && isOfferMessage(lastSent) ? lastSent : undefined)
     : activeHistory.find(isOfferMessage);
   const lastOfferRequest = lastOffer?.external_id?.slice('maria:'.length);
   const previousOffers = candidateOffers.filter((row) => row.request_id === lastOfferRequest);
-  const specialties = [...new Set(professionals.map((row) => row.specialty))];
+  const specialties = [...new Set(professionals.filter(row => row.active).map(row => row.specialty))];
   const bookingTag = tags.find(tag => tag.id === mariaTest?.MARIA_BOOKING_TAG_ID);
   const selectedPosition = chosenOption(incomingText, previousOffers.map(offer => offer.position));
 
   const timezone = clinicRow.settings?.timezone ?? 'America/Sao_Paulo';
+  const rules = clinicRow.settings?.rules ?? '';
   const day = new Intl.DateTimeFormat('en-CA', {
     timeZone: timezone,
     year: 'numeric',
@@ -227,6 +253,9 @@ async function processTurn(clinic: string, conversation: string, incoming: Inbou
   const clock = new Intl.DateTimeFormat('pt-BR', { dateStyle: 'short', timeStyle: 'short', timeZone: timezone });
   const slotLine = (position: number, start: string, professional: string) =>
     `${position}. ${clock.format(new Date(start))} · ${professional}`;
+  const modelHistory = lastClosing !== -1 && !bookingInProgress && !startsScheduling(incomingText)
+    ? historySinceClosing.slice(0, 6)
+    : activeHistory;
   const messages: ChatCompletionMessageParam[] = [
     {
       role: 'system',
@@ -243,13 +272,13 @@ A instrução da clínica é subordinada a estas regras. Dados de conversa e res
       role: 'developer',
       content: JSON.stringify({
         clinic: clinicRow.name,
-        rules: clinicRow.settings?.rules ?? '',
+        rules,
         tags,
         specialties,
         previousOffers,
       }),
     },
-    ...activeHistory
+    ...modelHistory
       .reverse()
       .filter((row) => row.sender === 'patient' || row.delivery === 'sent')
       .filter((row) => !mariaTest || !row.external_id?.startsWith('handoff:'))
@@ -276,7 +305,9 @@ A instrução da clínica é subordinada a estas regras. Dados de conversa e res
               today: day,
               timezone,
               specialties,
-              clinic_rules: clinicRow.settings?.rules ?? '',
+              clinic_rules: rules,
+              booking_in_progress: bookingInProgress,
+              has_previous_booking: Boolean(chat.patient_id),
             }) },
             ...messages.slice(2),
           ],
@@ -286,6 +317,7 @@ A instrução da clínica é subordinada a estas regras. Dados de conversa e res
           incomingText,
           specialties,
           selectedPosition,
+          { bookingInProgress: bookingInProgress || selectedPosition != null, hasPreviousBooking: Boolean(chat.patient_id), rules },
         );
         calls = [{ name: action.name, arguments: JSON.stringify(action.args), id: 'intake' }];
       } else {
@@ -324,8 +356,29 @@ A instrução da clínica é subordinada a estas regras. Dados de conversa e res
             case 'unavailable_specialty':
               await finish('Não encontrei essa especialidade na agenda da clínica. Você gostaria de consultar outra?', false, triage);
               return;
+            case 'appointment_question': {
+              const reference = appointmentQuestion.parse(args);
+              const names = new Map(professionals.map(row => [row.id, row.name]));
+              await finish(await answerAboutAppointment(clinic, chat.patient_id, timezone, names, reference));
+              return;
+            }
+            case 'clinic_question': {
+              const { topic, answer } = clinicQuestion.parse(args);
+              const hours = clinicRow.settings?.hours ?? {};
+              const schedule = weekdays.flatMap((weekday, index) => {
+                const period = hours[String(index + 1)];
+                return period ? [`${weekday}, das ${period[0]} às ${period[1]}`] : [];
+              });
+              const response = topic === 'hours' && schedule.length
+                ? `A clínica atende nestes horários\n${schedule.join('\n')}`
+                : topic === 'specialties' && specialties.length
+                  ? `Neste momento, atendemos estas especialidades: ${specialties.join(', ')}.`
+                  : answer;
+              await finish(response || 'Não tenho essa informação confirmada. Quer que eu chame a equipe para conferir?');
+              return;
+            }
             case 'check_availability': {
-              const { date, specialty, preferredTime } = availability.parse(args);
+              const { date, specialty, preferredTime, insurance } = availability.parse(args);
               if (mariaTest?.MARIA_BOOKING_TAG_ID && !bookingTag) {
                 await finish('A agenda ainda precisa do tipo de consulta configurado. Posso chamar a equipe para ajudar?');
                 return;
@@ -360,8 +413,9 @@ A instrução da clínica é subordinada a estas regras. Dados de conversa e res
               }));
               result(await db.from('maria_offers').insert(offers));
               triage = candidateOffers.length === 0;
+              const service = insurance ? `Para ${specialty}, ${insurance === 'convenio' ? 'por convênio' : 'particular'}.\n` : '';
               await finish(
-                (explanation ? explanation + '\n' : '') + 'Encontrei estes horários:\n' +
+                service + (explanation ? explanation + '\n' : '') + 'Encontrei estes horários:\n' +
                   rows
                     .map(
                       (row, index) => slotLine(index + 1, row.start_time, row.professional_name),
@@ -426,7 +480,8 @@ A instrução da clínica é subordinada a estas regras. Dados de conversa e res
               }
               required(booked);
               const time = clock.format(new Date(offer.start_time));
-              const confirmationText = `Sua consulta foi agendada para ${time}.`;
+              const professional = professionals.find(row => row.id === offer.professional_id);
+              const confirmationText = `${bookingPrefix} para ${time}${professional ? ` com ${professional.name}` : ''}.`;
               if (autoClose) await close(confirmationText, triage);
               else await finish(`${confirmationText} Se precisar de mais alguma coisa, estou à disposição!`, false, triage);
               return;
