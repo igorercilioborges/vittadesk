@@ -113,7 +113,14 @@ export function demoData(): Data {
     professionals,
     appointment_tags,
     whatsapp_sessions: [
-      { clinic_id, status: 'connected', phone_number: '5511988221140', enabled: true, maria_enabled: true },
+      {
+        clinic_id,
+        status: 'connected',
+        phone_number: '5511988221140',
+        enabled: true,
+        maria_enabled: true,
+        updated_at: new Date().toISOString(),
+      },
     ],
     conversations: patients
       .slice(0, 3)

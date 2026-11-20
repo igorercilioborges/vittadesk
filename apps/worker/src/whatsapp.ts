@@ -30,6 +30,7 @@ export const connectedSocket = (clinic: string) => {
 };
 
 async function saveStatus(clinic: string, status: string, qr: string | null = null, phone?: string) {
+  const updated_at = new Date().toISOString();
   result(await db.from('whatsapp_qr').upsert({ clinic_id: clinic, qr_code: qr }));
   result(
     await db
@@ -37,7 +38,7 @@ async function saveStatus(clinic: string, status: string, qr: string | null = nu
       .update({
         status,
         maria_enabled: Boolean(config.OPENAI_API_KEY),
-        updated_at: new Date().toISOString(),
+        updated_at,
         ...(phone ? { phone_number: phone } : {}),
       })
       .eq('clinic_id', clinic),
@@ -151,6 +152,7 @@ async function connect(clinic: string) {
   const socket = makeWASocket({
     auth,
     logger: socketLogger,
+    qrTimeout: 20_000,
     syncFullHistory: false,
     markOnlineOnConnect: false,
   });

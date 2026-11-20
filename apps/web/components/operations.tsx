@@ -362,6 +362,15 @@ export function Agents({
   );
 }
 
+const workerUrl = process.env.NEXT_PUBLIC_WORKER_URL;
+// Hide the image before the worker rotates its 20-second code.
+const qrDisplayMs = 19_000;
+
+async function wakeWhatsAppWorker(signal: AbortSignal) {
+  if (workerUrl)
+    await fetch(new URL('/health', workerUrl), { mode: 'no-cors', credentials: 'omit', cache: 'no-store', signal });
+}
+
 export function Connections({
   data,
   write,
@@ -377,9 +386,13 @@ export function Connections({
 }) {
   const session = data.whatsapp_sessions[0];
   const rawQr = data.whatsapp_qr[0]?.qr_code;
-  const [qr, setQr] = useState('');
+  const waitingForPairing = !demo && canManage && session?.enabled === true && session.status !== 'connected';
+  const expiresAt = waitingForPairing && session.status === 'qr_ready' ? Date.parse(session.updated_at) + qrDisplayMs : 0;
+  const [qrImage, setQrImage] = useState<{ raw: string; expiresAt: number; src: string } | null>(null);
+  const qr = qrImage && qrImage.raw === rawQr && qrImage.expiresAt === expiresAt ? qrImage.src : '';
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  const [wakingWorker, setWakingWorker] = useState(false);
   const [mailOpen, setMailOpen] = useState(false);
   const [gmailOverride, setGmailOverride] = useState<{
     email_address: string;
@@ -388,20 +401,50 @@ export function Connections({
   } | null>(null);
   const gmail = gmailOverride ?? data.gmail_integrations[0];
   useEffect(() => {
+    if (!waitingForPairing || !workerUrl) return;
+    const controller = new AbortController();
+    const wake = () => {
+      if (document.visibilityState === 'visible')
+        void wakeWhatsAppWorker(controller.signal).catch(() => {});
+    };
+    wake();
+    document.addEventListener('visibilitychange', wake);
+    return () => {
+      controller.abort();
+      document.removeEventListener('visibilitychange', wake);
+    };
+  }, [waitingForPairing]);
+  useEffect(() => {
+    const remaining = expiresAt - Date.now();
+    if (!rawQr || !expiresAt || remaining <= 0) return;
     let current = true;
-    setQr('');
-    if (rawQr && canManage)
-      void QRCode.toDataURL(rawQr, { width: 250, margin: 2 })
-        .then((value) => {
-          if (current) setQr(value);
-        })
-        .catch(() => {
-          if (current) setError('Não foi possível gerar a imagem do QR Code.');
-        });
+    const timer = setTimeout(() => {
+      current = false;
+      setQrImage(null);
+    }, remaining);
+    void QRCode.toDataURL(rawQr, { width: 250, margin: 2 })
+      .then((src) => {
+        if (current) setQrImage({ raw: rawQr, expiresAt, src });
+      })
+      .catch(() => {
+        if (current) setError('Não foi possível gerar a imagem do QR Code.');
+      });
     return () => {
       current = false;
+      clearTimeout(timer);
     };
-  }, [rawQr, canManage]);
+  }, [rawQr, expiresAt]);
+  async function refreshQr() {
+    setWakingWorker(true);
+    setError('');
+    try {
+      await wakeWhatsAppWorker(AbortSignal.timeout(90_000));
+    } catch {
+      setError('Não foi possível iniciar o WhatsApp. Tente carregar o QR Code novamente.');
+    } finally {
+      setWakingWorker(false);
+    }
+  }
   async function toggle() {
     setBusy(true);
     setError('');
@@ -421,9 +464,8 @@ export function Connections({
   async function configure(email: string, password?: string, dailySummary = false) {
     if (!demo) {
       const access = (await supabase?.auth.getSession())?.data.session?.access_token;
-      const endpoint = process.env.NEXT_PUBLIC_WORKER_URL;
-      if (!endpoint || !access) throw new Error('A URL do worker e uma sessão válida são necessárias.');
-      const response = await fetch(new URL('/gmail', endpoint), {
+      if (!workerUrl || !access) throw new Error('A URL do worker e uma sessão válida são necessárias.');
+      const response = await fetch(new URL('/gmail', workerUrl), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + access },
         body: JSON.stringify({ clinicId, email, password, dailySummary }),
@@ -445,11 +487,13 @@ export function Connections({
           <p>
             {session?.status === 'connected'
               ? 'Conectado'
-              : session?.status === 'qr_ready'
+              : qr
                 ? 'Aguardando leitura do QR Code'
-                : session?.enabled
-                  ? 'Aguardando conexão do worker'
-                  : 'Desconectado'}
+                : waitingForPairing
+                  ? 'Aguardando um novo QR Code. Mantenha esta tela aberta.'
+                  : session?.enabled
+                    ? 'Aguardando conexão'
+                    : 'Desconectado'}
           </p>
           {session?.phone_number && <p>+{session.phone_number}</p>}
           {qr && (
@@ -459,6 +503,11 @@ export function Connections({
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img alt="QR Code para conectar o WhatsApp" src={qr} width={250} height={250} />
             </div>
+          )}
+          {waitingForPairing && workerUrl && !qr && (
+            <Button onClick={refreshQr} disabled={wakingWorker}>
+              {wakingWorker ? 'Solicitando QR Code…' : 'Carregar QR Code'}
+            </Button>
           )}
           {canManage && (
             <Button variant="default" onClick={toggle} disabled={busy || demo}>

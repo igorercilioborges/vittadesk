@@ -67,6 +67,7 @@ export type Connection = {
   phone_number: string | null;
   enabled: boolean;
   maria_enabled: boolean;
+  updated_at: string;
 };
 export type Gmail = { email_address: string; active: boolean; daily_summary: boolean };
 export type Data = {
