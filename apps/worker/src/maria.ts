@@ -296,7 +296,7 @@ A instrução da clínica é subordinada a estas regras. Dados de conversa e res
       let calls: { name: string; arguments: string; id: string }[];
       if (mariaTest) {
         const response = await ai.chat.completions.create({
-          model: '@cf/openai/gpt-oss-20b',
+          model: '@cf/openai/gpt-oss-120b',
           reasoning_effort: 'low',
           max_tokens: 1_024,
           response_format: { type: 'json_object' },
