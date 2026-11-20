@@ -22,6 +22,7 @@ import {
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Dashboard } from './dashboard';
+import { Licenses } from './licenses';
 import { Agenda, AppointmentForm } from './agenda';
 import { Finance, Patients } from './records';
 import { Agents, ChatDesk, Connections } from './operations';
@@ -96,6 +97,9 @@ function Brand() {
 export function Workspace() {
   const demo = !supabase;
   const [screen, setScreen] = useState<Screen>('dashboard');
+  const [showLicenses, setShowLicenses] = useState(false);
+  const [isLicenseOwner, setIsLicenseOwner] = useState(false);
+  const [accountVersion, setAccountVersion] = useState(0);
   const [data, setData] = useState<Data>(emptyData);
   const [clinics, setClinics] = useState<Clinic[]>(demo ? [demoClinic] : []);
   const [members, setMembers] = useState<Membership[]>([]);
@@ -109,12 +113,14 @@ export function Workspace() {
   const [appointment, setAppointment] = useState<Appointment | 'new' | null>(null);
   const [appointmentDate, setAppointmentDate] = useState<string>();
   const [notice, setNotice] = useState('');
+  const authenticatedUser = useRef<string | null>(null);
   const activeClinic = useRef(clinicId);
   activeClinic.current = clinicId;
 
   useEffect(() => {
     const update = () => {
       const hash = window.location.hash.slice(1);
+      setShowLicenses(hash === 'licencas');
       const item = navigation.find((entry) => entry.id === hash);
       setScreen(item?.id ?? 'dashboard');
     };
@@ -133,7 +139,9 @@ export function Workspace() {
     const { data: auth } = client.auth.onAuthStateChange((_event, session) => {
       const request = ++generation;
       if (!session) {
+        authenticatedUser.current = null;
         setUser(null);
+        setIsLicenseOwner(false);
         setClinics([]);
         setClinicId('');
         setData(emptyData);
@@ -141,16 +149,29 @@ export function Workspace() {
         setLoading(false);
         return;
       }
+      if (authenticatedUser.current !== session.user.id) {
+        authenticatedUser.current = session.user.id;
+        setLoading(true);
+        setIsLicenseOwner(false);
+        setClinics([]);
+        setMembers([]);
+        setClinicId('');
+        setLoadedClinicId('');
+        setData(emptyData);
+        setNotice('');
+      }
       setUser(session.user.email ?? session.user.id);
       setTimeout(async () => {
-        const [clinicRows, membership] = await Promise.all([
+        const [clinicRows, membership, licenseOwner] = await Promise.all([
           client.from('clinics').select('id,name,settings').order('name'),
           client.from('clinic_members').select('clinic_id,name,role').eq('user_id', session.user.id),
+          client.rpc('is_license_owner'),
         ]);
         if (request !== generation) return;
         if (clinicRows.error || membership.error) {
           setNotice(clinicRows.error?.message ?? membership.error?.message ?? '');
         }
+        setIsLicenseOwner(licenseOwner.data === true);
         const available = (clinicRows.data ?? []) as Clinic[];
         setClinics(available);
         setMembers((membership.data ?? []) as Membership[]);
@@ -164,7 +185,7 @@ export function Workspace() {
       generation++;
       auth.subscription.unsubscribe();
     };
-  }, []);
+  }, [accountVersion]);
 
   useEffect(() => {
     if (!supabase || !clinicId) return;
@@ -281,6 +302,16 @@ export function Workspace() {
   };
 
   const clinic = clinics.find((row) => row.id === clinicId);
+  if (supabase && !loading && user && isLicenseOwner && (showLicenses || !clinic)) {
+    return (
+      <Licenses
+        client={supabase}
+        email={user}
+        openClinic={clinic ? () => go('dashboard') : undefined}
+        refreshAccount={() => setAccountVersion((current) => current + 1)}
+      />
+    );
+  }
   if (!demo && (loading || !user || !clinic)) return <Login loading={loading} user={user} notice={notice} />;
   if (!clinic) return null;
   const ready = demo || loadedClinicId === clinicId;
@@ -455,6 +486,13 @@ export function Workspace() {
                 <div className="popover card">
                   <strong>{me}</strong>
                   <p>{user ?? 'Ambiente de demonstração'}</p>
+                  {isLicenseOwner && (
+                    <p>
+                      <a className="text-button" href="#licencas">
+                        Gerenciar licenças
+                      </a>
+                    </p>
+                  )}
                   {user && (
                     <button className="text-button" onClick={() => void supabase?.auth.signOut()}>
                       <LogOut size={16} /> Sair

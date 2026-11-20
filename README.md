@@ -33,21 +33,22 @@ Use Node.js 22 ou superior. Instale com `npm ci`, aplique a migration em um proj
 
 Aplique migrations antes de publicar código que dependa delas. Mantenha a chave de serviço do Supabase apenas no worker.
 
-## Provisionar a primeira clínica
+## Configurar login e licenças
 
-Crie um usuário com e-mail e senha em **Supabase → Authentication → Users**. Aplique o SQL de `supabase/migrations` no SQL Editor do projeto ou, com a CLI instalada, execute `supabase link --project-ref SEU_PROJETO` e `supabase db push`. Desative o cadastro público no Supabase Auth se os usuários forem provisionados pela equipe.
-
-Como administrador do banco, substitua o UUID abaixo pelo ID do usuário criado e execute:
+1. Aplique as migrations de `supabase/migrations` na ordem dos arquivos. Com a CLI, execute `supabase link --project-ref SEU_PROJETO` e `supabase db push`.
+2. No Supabase, mantenha desativada a criação pública de contas. Em **Authentication → Users**, cadastre e confirme o e-mail da conta proprietária. Defina a senha temporária nessa tela e guarde-a fora do repositório.
+3. No SQL Editor, substitua o UUID de exemplo pelo ID da conta proprietária e execute:
 
 ```sql
-with clinic as (
-  insert into public.clinics(name,slug) values ('Clínica Vita Saúde','vita-saude') returning id
-)
-insert into public.clinic_members(clinic_id,user_id,role,name)
-select id,'00000000-0000-0000-0000-000000000000','admin','Administradora' from clinic;
+insert into private.license_owner(user_id)
+values ('00000000-0000-0000-0000-000000000000');
 ```
 
-Ao entrar no painel, cadastre profissionais e etiquetas em **CRM & Financeiro**. Configure horário de funcionamento, duração e regras em **Agentes**. O fuso inicial é `America/Sao_Paulo` e pode ser ajustado no JSON `clinics.settings.timezone`. Use números de telefone em formato internacional, apenas dígitos no banco.
+Entre no VittaDesk com essa conta e abra **Licenças**. A área aparece automaticamente se a conta ainda não está vinculada a uma clínica. Se já estiver, abra **Gerenciar licenças** no menu de perfil. Use **Alterar senha** para trocar a senha temporária.
+
+Cadastre as clínicas em **Nova clínica**. Para cada usuário, crie e confirme a conta por e-mail em **Authentication → Users** e depois use **Liberar licença** para vincular o e-mail à clínica e atribuir um perfil. A mesma operação atualiza o perfil se o vínculo já existir. Revogar uma licença remove apenas o acesso à clínica daquele vínculo e preserva os registros da clínica. Uma conta pode ter licenças para clínicas diferentes.
+
+Cada clínica configura profissionais e etiquetas em **CRM & Financeiro**, além de horário de funcionamento, duração e regras em **Agentes**. O fuso inicial é `America/Sao_Paulo` e pode ser ajustado em `clinics.settings.timezone`. Use números de telefone em formato internacional, apenas dígitos no banco.
 
 ## WhatsApp, Maria e Gmail
 
