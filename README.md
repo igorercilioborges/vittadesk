@@ -4,7 +4,7 @@ Monorepo para operação de clínicas, agenda, financeiro e atendimento WhatsApp
 
 ## GitHub
 
-O código está em `igorercilioborges/vittadesk`. Para trabalhar a partir do repositório público, execute:
+O repositório público do projeto é `igorercilioborges/vittadesk`. Para cloná-lo, execute:
 
 ```sh
 git clone https://github.com/igorercilioborges/vittadesk.git
@@ -29,7 +29,7 @@ Use Node.js 22 ou superior. Instale com `npm ci`, aplique a migration em um proj
 ## Deploy automático
 
 - **Vercel.** Importe `igorercilioborges/vittadesk` como projeto Next.js, selecione `apps/web` como Root Directory e habilite arquivos fora do diretório raiz. Use a instalação padrão do monorepo. Configure as variáveis de `apps/web/.env.example`, configure `main` como Production Branch e mantenha a integração Git ativa.
-- **Render.** Crie um Web Service Node vinculado a `main` no mesmo repositório. Deixe Root Directory vazio para acessar o lockfile e use Build Command `npm ci --include=dev && npm run build -w @vittadesk/worker` e Start Command `npm run start -w @vittadesk/worker`. Use `/health` como Health Check Path, habilite auto-deploy e configure as variáveis de `apps/worker/.env.example`. Selecione uma instância que permaneça ativa.
+- **Render.** Importe `igorercilioborges/vittadesk` em **New → Blueprint** depois de publicar o código na branch `main`. O arquivo `render.yaml` configura o build do worker, o deploy automático, a verificação em `/health`, as URLs de produção e a chave de criptografia da sessão. Defina `SUPABASE_SERVICE_ROLE_KEY` no campo secreto solicitado pelo Render. O plano gratuito serve para testar o QR Code e suspende o serviço após inatividade. Para atendimento contínuo, selecione uma instância que permaneça ativa.
 
 Aplique migrations antes de publicar código que dependa delas. A chave de serviço do Supabase é usada no worker e na Edge Function, em ambiente de servidor.
 
@@ -58,7 +58,7 @@ Cada clínica configura profissionais e etiquetas em **CRM & Financeiro**, além
 
 ## WhatsApp, Maria e Gmail
 
-- Gere uma chave de criptografia com `openssl rand -hex 32` e configure `SESSION_ENCRYPTION_KEY` no Render. Preserve essa chave entre deploys. Ela protege os dados da autenticação do Baileys e a senha SMTP.
+- O Blueprint gera automaticamente `SESSION_ENCRYPTION_KEY`. Em uma configuração manual, gere a chave com `openssl rand -hex 32`. Preserve essa chave entre deploys para restaurar a autenticação do Baileys e a senha SMTP.
 - Configure `WEB_ORIGIN` no worker com a origem da Vercel e `NEXT_PUBLIC_WORKER_URL` no painel com a URL HTTPS do Render. Em **Ferramentas & Conexões**, solicite a conexão e escaneie o QR pelo WhatsApp em **Aparelhos conectados**. A sessão é por clínica e é restaurada após reinicialização.
 - Configure `OPENAI_API_KEY` e `OPENAI_MODEL` no worker para ativar a Maria. A agente agrupa mensagens após três segundos de silêncio, consulta a agenda e encaminha urgências ou pedidos de atendimento humano. A integração usa mensagens do WhatsApp como contexto de recepção.
 - No Gmail, habilite a verificação em duas etapas e gere uma senha de aplicativo. Informe a conta e a senha em **Ferramentas & Conexões**. Habilite o resumo diário para receber, a partir das 8h no fuso da clínica, os totais do dia anterior no e-mail configurado. A fila envia a confirmação de consultas confirmadas quando o paciente tem e-mail, incluindo agendamentos da Maria. O worker precisa de saída SMTP para o Gmail. Use um plano Render que permita conexões SMTP de saída.

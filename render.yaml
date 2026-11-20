@@ -1,0 +1,29 @@
+services:
+  - type: web
+    name: vittadesk-worker
+    runtime: node
+    plan: free
+    region: virginia
+    branch: main
+    autoDeployTrigger: commit
+    buildCommand: npm ci --include=dev --workspace @vittadesk/worker && npm run build --workspace @vittadesk/worker
+    startCommand: npm run start --workspace @vittadesk/worker
+    healthCheckPath: /health
+    buildFilter:
+      paths:
+        - apps/worker/**
+        - apps/web/package.json
+        - package.json
+        - package-lock.json
+        - render.yaml
+    envVars:
+      - key: NODE_VERSION
+        value: '24.22.1'
+      - key: SUPABASE_URL
+        value: https://wzmydzlwopqqgusxwuam.supabase.co
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: SESSION_ENCRYPTION_KEY
+        generateValue: true
+      - key: WEB_ORIGIN
+        value: https://vittadesk.vercel.app

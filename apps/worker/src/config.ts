@@ -3,11 +3,18 @@ import { createClient } from '@supabase/supabase-js';
 import { z } from 'zod';
 import type { Database } from './database.js';
 
+const hexKey = /^[0-9a-f]{64}$/i;
+const base64Key = /^[A-Za-z0-9+/]{43}=$/;
+const sessionKey = z
+  .string()
+  .refine((key) => hexKey.test(key) || base64Key.test(key), 'Use uma chave de 32 bytes em hex ou Base64.')
+  .transform((key) => Buffer.from(key, hexKey.test(key) ? 'hex' : 'base64'));
+
 export const config = z
   .object({
     SUPABASE_URL: z.url(),
     SUPABASE_SERVICE_ROLE_KEY: z.string().min(1),
-    SESSION_ENCRYPTION_KEY: z.string().regex(/^[0-9a-f]{64}$/i),
+    SESSION_ENCRYPTION_KEY: sessionKey,
     OPENAI_API_KEY: z.string().min(1).optional(),
     OPENAI_MODEL: z.string().default('gpt-4.1-mini'),
     WEB_ORIGIN: z.url(),
@@ -33,7 +40,7 @@ export function required<R extends QueryResult>(response: R): NonNullable<R['dat
 
 export function encrypt(value: string) {
   const iv = randomBytes(12);
-  const cipher = createCipheriv('aes-256-gcm', Buffer.from(config.SESSION_ENCRYPTION_KEY, 'hex'), iv);
+  const cipher = createCipheriv('aes-256-gcm', config.SESSION_ENCRYPTION_KEY, iv);
   return {
     iv: iv.toString('base64'),
     data: Buffer.concat([cipher.update(value, 'utf8'), cipher.final()]).toString('base64'),
@@ -43,7 +50,7 @@ export function encrypt(value: string) {
 export function decrypt(value: ReturnType<typeof encrypt>) {
   const cipher = createDecipheriv(
     'aes-256-gcm',
-    Buffer.from(config.SESSION_ENCRYPTION_KEY, 'hex'),
+    config.SESSION_ENCRYPTION_KEY,
     Buffer.from(value.iv, 'base64'),
   );
   cipher.setAuthTag(Buffer.from(value.tag, 'base64'));
